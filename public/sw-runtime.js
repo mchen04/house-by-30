@@ -3,9 +3,11 @@ export function startServiceWorker(worker, version) {
   const shell = [
     "/",
     "/manifest.webmanifest",
-    "/icon-192.png",
-    "/icon-512.png",
-    "/apple-touch-icon.png",
+    "/house-by-30-icon-192.png",
+    "/house-by-30-icon-512.png",
+    "/house-by-30-icon-1024.png",
+    "/house-by-30-icon-maskable-512.png",
+    "/house-by-30-apple-touch-icon.png",
   ];
   worker.addEventListener("install", (event) => {
     event.waitUntil(
