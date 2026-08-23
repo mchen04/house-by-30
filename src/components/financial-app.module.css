@@ -423,7 +423,6 @@
   background: var(--ink);
   color: var(--text-inverse);
   box-shadow: var(--shadow);
-  cursor: pointer;
 }
 
 /* T3. Beside-text step; replaces `size={16}`. The toast is `--control-sm`

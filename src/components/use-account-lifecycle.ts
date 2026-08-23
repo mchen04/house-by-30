@@ -65,6 +65,14 @@ interface CachedLaunch {
   owner: CacheOwnerStatus;
 }
 
+function sameUser(left: User, right: User): boolean {
+  return (
+    left.id === right.id &&
+    left.email === right.email &&
+    left.sessionId === right.sessionId
+  );
+}
+
 async function cachedLaunch(): Promise<CachedLaunch | null> {
   const user = await lastRememberedUser();
   if (!user) return null;
@@ -277,10 +285,14 @@ export function useAccountLifecycle(
           !ownerSignal.aborted &&
           runtimeRef.current.activeAccount === response.user.id &&
           runtimeRef.current.accountGeneration === generation
-        )
-          setUser(
-            userWithLatestSession(response.user, latestSessionRef.current),
+        ) {
+          const nextUser = userWithLatestSession(
+            response.user,
+            latestSessionRef.current,
           );
+          if (!restoredSnapshot || !sameUser(restoredSnapshot.user, nextUser))
+            setUser(nextUser);
+        }
       } catch (error) {
         if (
           runtimeRef.current.accountGeneration !== ownedGeneration ||

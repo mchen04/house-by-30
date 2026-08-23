@@ -476,7 +476,7 @@ export function usePlanSync(session: PlanSessionController) {
         },
       );
       runtimeRef.current.localWriteChain = write
-        .then((result) => {
+        .then(async (result) => {
           if (
             result === "missing-baseline" ||
             runtimeRef.current.activeAccount !== accountId ||
@@ -506,6 +506,53 @@ export function usePlanSync(session: PlanSessionController) {
             durability.durableIntentRevision;
           if (runtimeRef.current.retryablePersistenceFailure) {
             setSaveState("local-error");
+            return;
+          }
+          if (runtimeRef.current.startupValidationPending) return;
+          if (result === "unchanged") {
+            if (navigator.onLine && runtimeRef.current.planRefreshNeeded) {
+              setSaveState(
+                reconciliationStateWithPersistencePriority({
+                  candidate: "saving",
+                  volatileWriteFailure: runtimeRef.current.volatileWriteFailure,
+                  retryablePersistenceFailure:
+                    runtimeRef.current.retryablePersistenceFailure,
+                  reconciliationPersistenceFailure:
+                    runtimeRef.current.reconciliationPersistenceFailure,
+                  rejectedWriteFailure: runtimeRef.current.rejectedWriteFailure,
+                }),
+              );
+              return;
+            }
+            const queuedMutationCount = (await queuedMutations(accountId))
+              .length;
+            if (
+              runtimeRef.current.activeAccount !== accountId ||
+              runtimeRef.current.accountGeneration !== generation
+            )
+              return;
+            setSaveState(
+              reconciliationStateWithPersistencePriority({
+                candidate: navigator.onLine
+                  ? queuedMutationCount > 0
+                    ? "saving"
+                    : "saved"
+                  : "offline",
+                volatileWriteFailure: runtimeRef.current.volatileWriteFailure,
+                retryablePersistenceFailure:
+                  runtimeRef.current.retryablePersistenceFailure,
+                reconciliationPersistenceFailure:
+                  runtimeRef.current.reconciliationPersistenceFailure,
+                rejectedWriteFailure: runtimeRef.current.rejectedWriteFailure,
+              }),
+            );
+            if (navigator.onLine && queuedMutationCount > 0) {
+              window.clearTimeout(runtimeRef.current.syncTimer);
+              runtimeRef.current.syncTimer = window.setTimeout(
+                () => void reconcileFor(account),
+                650,
+              );
+            }
             return;
           }
           if (!navigator.onLine) {

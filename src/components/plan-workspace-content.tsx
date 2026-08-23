@@ -38,15 +38,27 @@ const tabLabels: Record<TabScreen, string> = {
   plan: "Plan",
 };
 
+const loadAccountScreen = () => import("./account-screen");
+const loadBenefitsScreen = () => import("./benefits-screen");
+const loadCompareScreen = () => import("./compare-screen");
+
 const AccountScreen = dynamic(() =>
-  import("./account-screen").then(({ AccountScreen }) => AccountScreen),
+  loadAccountScreen().then(({ AccountScreen }) => AccountScreen),
 );
 const BenefitsScreen = dynamic(() =>
-  import("./benefits-screen").then(({ BenefitsScreen }) => BenefitsScreen),
+  loadBenefitsScreen().then(({ BenefitsScreen }) => BenefitsScreen),
 );
 const CompareScreen = dynamic(() =>
-  import("./compare-screen").then(({ CompareScreen }) => CompareScreen),
+  loadCompareScreen().then(({ CompareScreen }) => CompareScreen),
 );
+
+export async function preloadSecondaryScreens(): Promise<void> {
+  await Promise.allSettled([
+    loadAccountScreen(),
+    loadBenefitsScreen(),
+    loadCompareScreen(),
+  ]);
+}
 
 export function PlanWorkspaceContent({
   today,

@@ -26,6 +26,7 @@ function deploymentVersion(): string {
 }
 
 const deploymentId = deploymentVersion();
+process.env.NEXT_DEPLOYMENT_ID = deploymentId;
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
@@ -36,6 +37,7 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers: [
+          { key: "X-House-By-30-Build", value: deploymentId },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           {

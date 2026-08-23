@@ -625,6 +625,14 @@ describe("daily cockpit integration contract", () => {
     const cachedMount = mounted as MountedSync | undefined;
     const paintedBeforeBootstrap = cachedMount?.session.phase === "ready";
     const cachedSalary = cachedMount?.session.draft?.grossSalaryCents;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    });
+    expect(
+      jsonRequest.mock.calls.filter(
+        ([url]) => url === "/api/plans" || url === "/api/auth/session",
+      ),
+    ).toHaveLength(0);
 
     releaseBootstrap();
     await settleUntil(
@@ -636,6 +644,7 @@ describe("daily cockpit integration contract", () => {
 
     expect(paintedBeforeBootstrap).toBe(true);
     expect(cachedSalary).toBe(baseline.grossSalaryCents);
+    for (let attempt = 0; attempt < 20; attempt += 1) await settle();
     expect(
       jsonRequest.mock.calls.filter(([url]) => url === "/api/auth/session"),
     ).toHaveLength(0);
