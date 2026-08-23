@@ -1,10 +1,12 @@
 # Architecture decision
 
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-23
 
 ## Decision
 
 House by 30 is one Next.js 16 App Router application on Node.js 20 with React 19 and TypeScript. Route handlers provide the JSON boundary, PostgreSQL is the server source of truth, and a small IndexedDB adapter provides the account-scoped offline cache and mutation outbox. The same dependency-free computation module runs in the browser and in Vitest.
+
+Installed launch starts the public shell, IndexedDB read, and server bootstrap together. A matching cache can paint before the server responds. The server response then refreshes the same account in place.
 
 The architecture follows the current Next.js guidance for a server-only data access layer: only `src/server/**` may import the database client or read secrets; every DAL operation accepts the authenticated account ID and includes it in its query. Route handlers validate input and output with Zod. Session cookies carry opaque random tokens; only a SHA-256 token digest is stored. Passwords use Node `crypto.pbkdf2` with SHA-256, a per-user salt, and a documented work factor, avoiding a native deployment dependency. Login and signup first consume an atomic PostgreSQL fixed-window counter for the Vercel-provided client IP before JSON parsing, then a normalized-email counter after schema validation and before PBKDF2. Counter keys are hashed at rest, concurrent function instances share the same limits, signup volume is bounded per IP, exhausted buckets return `429` with `Retry-After`, and a limiter failure fails closed. Buckets become cleanup-eligible five minutes beyond the longest live policy window, and opportunistic expiry locks and removes at most 100 rows per request while skipping a bucket that another request is reactivating.
 
@@ -92,7 +94,15 @@ variance separately; actual variance and funding replace their planned
 counterparts exactly once. An ending balance is derived only when starting
 savings is configured.
 
-The browser database name includes the authenticated user ID. Every private request binds the screen's expected account ID to the cookie-authenticated account; a mismatch returns 409 before access and broadcasts cross-tab eviction. Logout and deletion additionally bind the rendered server session UUID, so a stale close cannot consume a newer same-account cookie even if Web Lock grant beats BroadcastChannel delivery. Web Locks are required to serialize private browser writes and account closure across tabs, while a global shell lock protects remembered identity; an unsupported browser gets an explicit persistence failure rather than an unfenced IndexedDB lease. Logout and deletion refuse any undurable displayed draft, then write a mode-aware indeterminate closure marker before calling the server. A confirmed response makes the marker terminal. If the request may have committed but its response is lost, timed out, or aborted, the indeterminate marker remains and the browser conservatively broadcasts eviction and clears or locks its private local data. Startup and offline fallback honor either marker state; only explicit authentication clears it. On the server, each plan-year sync group validates the actual winning post-reconciliation state inside the same SQL transaction that holds the plan lock.
+The browser database name includes the authenticated user ID. Login also sets a readable cache-owner hint with the session UUID. This value is not an authentication token.
+
+The client paints private cache data only when this hint matches the cached session. A mismatch keeps the public shell visible until bootstrap confirms the account. A missing legacy hint becomes trusted only after a successful bootstrap or a network failure for the remembered account.
+
+Every private request binds the screen's expected account ID to the cookie-authenticated account. A mismatch returns 409 before access and broadcasts cross-tab eviction. Logout and deletion also bind the rendered server session UUID. A stale close cannot consume a newer same-account cookie.
+
+Web Locks serialize private browser writes and account closure across tabs. A global shell lock protects remembered identity. An unsupported browser reports a persistence failure.
+
+Logout and deletion refuse any undurable displayed draft. They write a mode-aware indeterminate closure marker before the server request. Startup and offline fallback honor that marker. Only explicit authentication clears it.
 
 Account deletion calls the authenticated `DELETE /api/account` boundary after that durability and marker gate. The repository deletes the owned user row; foreign keys cascade through sessions, plans, benefits, expenses, and mutation receipts inside one database transaction. A definitive 409 account-mismatch rejection may roll back a newly created marker because the server proves that it did not act. Indeterminate outcomes instead return to authentication with an explicit verification/retry notice; signing in proves that the account still exists, clears the marker, and permits another deletion attempt. Closure modes are not interchangeable: a confirmed deletion also satisfies logout, but a logout marker can never claim that deletion succeeded.
 
@@ -103,6 +113,12 @@ Tax tables are JSON data keyed by year. Federal filing-status schedules and all 
 ## Deployment shape
 
 The production target is a Node-capable Next.js host with a server-only `DATABASE_URL`. Neon is the production database. Static public assets and the service worker are served by the same origin. No background worker, email service, bank integration, or paid dependency is required.
+
+Each build has one stable deployment ID. The ID appears in the worker bytes, shell cache name, page prop, and response header.
+
+The worker owns only the public shell, icons, manifest, and static chunks. IndexedDB owns private plans and the outbox. Every JSON API response is `private, no-store`.
+
+Navigation uses a cached shell with background refresh. Worker install fetches the shell and its initial static chunks as one version. Old shell caches remain while any live page reports an old build.
 
 ## Generated and historical files
 

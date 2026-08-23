@@ -1,14 +1,15 @@
 # Offline cache and reconciliation
 
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-23
 
 The PostgreSQL server is the source of truth. IndexedDB is an account-scoped working cache so the installed PWA can open and edit without a network.
 
 ## Storage layout
 
-- `kyle-financial-shell` stores only the last authenticated user ID/email and non-secret server session UUID needed to find an offline account cache and fence destructive close requests. Legacy records without a session UUID remain readable; their remote close outcome is treated conservatively as indeterminate. Logout removes this record.
+- `kyle-financial-shell` stores only the last authenticated user ID/email and non-secret server session UUID. This record locates one offline account cache and fences destructive close requests. Legacy records without a session UUID remain readable. Their remote close outcome stays indeterminate. Logout removes the record but keeps the empty shell database.
 - `kyle-financial-account-<user UUID>` stores complete plan DTOs keyed by year and an outbox keyed by mutation UUID. Another account uses a different database name. Logout deletes the current account database before another account can use the app.
-- The service-worker cache contains the public app shell, manifest, icons, and current build’s same-origin static resources. It never caches `/api/**` responses or private plan JSON.
+- `kyle_cache_owner` is a readable session UUID cookie. The server sets it with the login session expiry. It is an account hint, not an authentication token.
+- The service-worker cache contains the public app shell, manifest, icons, and same-origin static resources. It never caches `/api/**`, React Server Component requests, or private plan JSON.
 
 The app requests persistent browser storage when supported. Installed iOS home-screen storage remains platform-controlled, so server persistence and JSON export are still the durability guarantees.
 
@@ -21,9 +22,11 @@ source and never claims to include another device's unsynced work.
 
 ## Offline lifecycle
 
-1. A successful session fetch remembers the account and replaces its plan cache with the server result.
-2. If the session request fails at the network layer, the shell loads that remembered account’s cached plans. A real HTTP 401 never falls back to cached private data.
-3. Every edit immediately recomputes in memory and atomically commits the
+1. Launch starts the cached-account read and `/api/bootstrap` together.
+2. A matching owner hint can paint private data before bootstrap finishes. A mismatch never paints cached private data.
+3. A missing legacy hint waits for bootstrap. A network failure can restore the remembered account. A real HTTP 401 never restores private data.
+4. A successful bootstrap confirms the account, refreshes its cache, and reconciles pending work. A 401 clears a matching owner hint.
+5. Every edit immediately recomputes in memory and atomically commits the
    cached plan plus its outbox mutations in one IndexedDB transaction, even
    when the browser reports online. Network delivery is a separate debounced
    step, so a failed request cannot strand the edit in React memory. Scalars
@@ -31,8 +34,8 @@ source and never claims to include another device's unsynced work.
    property under a stable item UUID. A Fast Log transaction and an inline
    category creation therefore survive a cold offline relaunch before any
    network delivery.
-4. On reconnect, superseded same-field edits are compacted and the outbox drains valid work in chronological batches of at most 500. An unresolved blank label remains pending as an explicit error but cannot block unrelated valid mutations. After acknowledgement, the client fetches a fresh server snapshot and caches it only when the outbox is still empty and the snapshot is not older than the cached server revision.
-5. Duplicate posts are safe: `(user_id, mutation_id)` is the receipt key.
+6. On reconnect, the foreground `online` path compacts superseded edits. It drains valid work in chronological batches of at most 500. The app does not depend on Background Sync. An unresolved blank label stays pending as an explicit error but cannot block unrelated valid mutations. After acknowledgement, the client fetches a fresh server snapshot. It caches that snapshot only when the outbox is empty and the server revision is current.
+7. Duplicate posts are safe: `(user_id, mutation_id)` is the receipt key.
    Receipts remain until account deletion because an offline outbox mutation
    has no retry expiry; pruning one earlier would let a delayed duplicate act
    as a new mutation.
@@ -78,4 +81,23 @@ Duplicate mutation IDs are accepted only when their canonical payload is identic
 
 ## Service-worker updates
 
-`/sw.js` is generated with Next’s current deployment ID in both its script bytes and cache name. The deployment ID comes from the hosting/git SHA, so each released revision installs beside the active worker and shows an `Update ready · reload` control. Only that user action sends `SKIP_WAITING`; `controllerchange` reloads once. Activation removes every older `kyle-shell-*` cache while leaving unrelated origin caches alone, preventing mixed build versions and unbounded hashed-asset growth. The worker response is explicitly `no-store` and retains the same API/private-data exclusion rules.
+`/sw.js` contains the current deployment ID. The same ID appears in the shell cache, page prop, and response header. The hosting SHA supplies the ID. A local Git SHA is the fallback.
+
+Install fetches the root shell without HTTP cache reuse. It extracts and caches the initial static files. A build-header mismatch rejects the install.
+
+Navigation returns the cached shell first. Navigation preload and a background request refresh it. The worker caches only approved public URLs. It rejects cross-origin, API, and React Server Component requests.
+
+The client checks for updates at launch, reconnect, page restore, visibility return, and every hour. It uses `updateViaCache: none` for the worker script.
+
+A waiting worker activates automatically only when the page is visible and has no buffered or undurable edit. A blocked update shows `Update ready · saving first`. The client retries after the edit becomes durable.
+
+Activation claims clients. Each live page reports its build. The worker keeps old shell caches until every live page uses the current build. This protects lazy chunks in an old page. A reload guard prevents a controller-change loop.
+
+## Recovery and operations
+
+- If an update waits, finish or blur the current field. Keep the page visible until `Saved` appears.
+- If offline work does not sync, reopen the app online. Wait for `Saved`, or use the visible retry action.
+- Logout clears the current private IndexedDB cache and owner hint. It does not delete server plans.
+- Clearing site data removes local-only unsynced work. It does not remove server data. Sign in online to restore the server copy.
+- Never use browser cache clearing as database recovery.
+- Roll back application code without rolling back migrations or deleting database history.

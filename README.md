@@ -8,7 +8,7 @@ Requirements: Node 20+, pnpm, and PostgreSQL.
 
 ```bash
 pnpm install
-export DATABASE_URL='postgresql://...'
+export DATABASE_URL='<local-database-url>'
 pnpm db:migrate
 pnpm dev
 ```
@@ -29,6 +29,8 @@ pnpm verify
 
 The gate runs formatting, token-authority checks, lint, TypeScript, deterministic unit/property/integration tests, and a production Next.js build. PostgreSQL tests create an isolated local test database and apply every migration from empty.
 
+Use `pnpm test:coverage` for the maintained V8 coverage report. Coverage output is a run artifact and is not committed.
+
 ## Yearly tax-table update
 
 1. Copy the prior year's `src/domain/tax/tables/<year>.federal.json` and `<year>.states.json` to the new year and replace every value, citation ID, and `sources` label/URL from the current IRS, SSA, and Tax Foundation sources.
@@ -46,7 +48,7 @@ Users can permanently delete themselves from Account. The app first makes local 
 
 ## Install on iPhone
 
-Open the deployed HTTPS URL in Safari, tap Share, choose **Add to Home Screen**, and open House by 30 from the new icon. Safari has no install prompt, so the Account screen repeats these steps. Complete one online sign-in and sync before testing an offline launch; afterward the cached Home, Fast Log, Activity, Budget, Wrap, and Plan flows work without a network connection.
+Open the deployed HTTPS URL in Safari, tap Share, choose **Add to Home Screen**, and open House by 30 from the new icon. Safari has no install prompt, so the Account screen repeats these steps. Complete one online sign-in and sync before testing an offline launch. This step binds the account hint to its private IndexedDB cache. Later launches can show matching cached data before the server responds. Home, Fast Log, Activity, Budget, Wrap, and Plan then work without a network connection.
 
 ## Production and Vercel runbook
 
@@ -59,6 +61,8 @@ pnpm build
 pnpm start
 ```
 
+Provide one stable deployment ID per build. Vercel uses `VERCEL_GIT_COMMIT_SHA`. Other hosts can set `NEXT_DEPLOYMENT_ID` or `GIT_SHA`. The local Git SHA is the final fallback.
+
 For Vercel, create or link the project, add `DATABASE_URL` as an encrypted
 Production environment variable, and run `pnpm db:migrate` once from a trusted
 local shell against the production database before deploying. Then deploy with
@@ -69,9 +73,11 @@ idempotent; never reset the production schema during deployment. Roll back
 application code by redeploying the prior known-good commit—do not roll back or
 delete data migrations.
 
-The service worker caches only the public app shell and build assets; `/api/**` and private plan JSON are never stored in Cache Storage. See [architecture](docs/architecture.md), [offline and sync behavior](docs/offline-and-sync.md), and [research sources](docs/research/sources.md).
+The service worker caches only the public app shell and build assets. It never stores `/api/**` or private plan JSON in Cache Storage. It checks for updates during normal use. It activates and reloads automatically after visible edits become durable. See [architecture](docs/architecture.md), [offline and sync behavior](docs/offline-and-sync.md), and [PWA research](docs/research/pwa-2026-08.md).
 
 Signed-in users can export every plan year, category, and transaction as one server-backed JSON file from Account. A second account-scoped device export remains available offline for the data currently cached on that device. Ordinary logout revokes the session and clears the local private cache without deleting server plans.
+
+If an update waits, finish or blur the current field and wait for `Saved`. If offline work does not sync, reopen the app online and use the visible retry action. Clear site data only when losing unsynced local work is acceptable. Site-data clearing does not delete server plans; sign in online to restore them.
 
 ## Repository anatomy
 

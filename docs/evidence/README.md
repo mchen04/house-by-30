@@ -1,6 +1,6 @@
 # Quality evidence policy
 
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-23
 
 This directory contains maintained QA conclusions, not test-run storage.
 
@@ -24,6 +24,7 @@ Current summaries:
 - `logic-hardening.md` — deterministic tax, sync, and planner convergence;
 - `mobile-density-baseline.md` — pre-density measurement and verifier limits;
 - `mobile-density-convergence.md` — maintained outcome of the density work;
+- `pwa-launch-performance.md` — launch, update, privacy, and test-audit results;
 - `ui-quality.md` — earlier visual/responsive/trust convergence.
 
 Research fixtures under `docs/research/evidence/` are different: tests consume
