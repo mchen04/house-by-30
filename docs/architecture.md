@@ -114,6 +114,8 @@ Tax tables are JSON data keyed by year. Federal filing-status schedules and all 
 
 The production target is a Node-capable Next.js host with a server-only `DATABASE_URL`. Neon is the production database. Static public assets and the service worker are served by the same origin. No background worker, email service, bank integration, or paid dependency is required.
 
+Automatic Git deployments are disabled. A production release requires an explicit operator command after verification and migration review.
+
 Each build has one stable deployment ID. The ID appears in the worker bytes, shell cache name, page prop, and response header.
 
 The worker owns only the public shell, icons, manifest, and static chunks. IndexedDB owns private plans and the outbox. Every JSON API response is `private, no-store`.

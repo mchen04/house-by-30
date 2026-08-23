@@ -63,6 +63,8 @@ pnpm start
 
 Provide one stable deployment ID per build. Vercel uses `VERCEL_GIT_COMMIT_SHA`. Other hosts can set `NEXT_DEPLOYMENT_ID` or `GIT_SHA`. The local Git SHA is the final fallback.
 
+`vercel.json` disables automatic Git deployments. A merge does not release the app. Production release stays an explicit `vercel deploy --prod` operation.
+
 For Vercel, create or link the project, add `DATABASE_URL` as an encrypted
 Production environment variable, and run `pnpm db:migrate` once from a trusted
 local shell against the production database before deploying. Then deploy with
