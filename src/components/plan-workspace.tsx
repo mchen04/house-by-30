@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import {
   useLayoutEffect,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -31,7 +32,10 @@ import {
   initialPeriod,
   periodForYear,
 } from "./daily-cockpit";
-import { PlanWorkspaceContent } from "./plan-workspace-content";
+import {
+  PlanWorkspaceContent,
+  preloadSecondaryScreens,
+} from "./plan-workspace-content";
 import {
   acceptCalculablePlanDraft,
   retryActionForSaveState,
@@ -148,6 +152,16 @@ export function PlanWorkspace(props: PlanWorkspaceProps) {
   useLayoutEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
   }, [screen]);
+  useEffect(() => {
+    if (props.saveState !== "saved") return;
+    const preload = () => void preloadSecondaryScreens();
+    if ("requestIdleCallback" in window) {
+      const request = window.requestIdleCallback(preload, { timeout: 2_000 });
+      return () => window.cancelIdleCallback(request);
+    }
+    const timeout = globalThis.setTimeout(preload, 1_000);
+    return () => globalThis.clearTimeout(timeout);
+  }, [props.saveState]);
 
   const acceptDraft = (nextDraft: StoredPlan) => {
     const error = acceptCalculablePlanDraft(nextDraft, props.onDraft);

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { userResponseSchema } from "@/domain/api-contracts";
+import { CACHE_OWNER_COOKIE, userResponseSchema } from "@/domain/api-contracts";
 import {
   authenticateUser,
   createSession,
@@ -15,6 +15,7 @@ import {
   crossSiteWriteResponse,
   errorResponse,
   parseJsonRequest,
+  PRIVATE_API_CACHE_CONTROL,
 } from "@/server/http";
 import { credentialsSchema } from "@/server/request-contracts";
 
@@ -54,9 +55,17 @@ export async function POST(request: Request): Promise<Response> {
     });
     if (!body.success)
       return errorResponse(500, "The server produced an invalid response.");
-    const response = NextResponse.json(body.data);
+    const response = NextResponse.json(body.data, {
+      headers: { "Cache-Control": PRIVATE_API_CACHE_CONTROL },
+    });
     response.cookies.set(SESSION_COOKIE, session.token, {
       httpOnly: true,
+      sameSite: "lax",
+      secure: new URL(request.url).protocol === "https:",
+      path: "/",
+      expires: session.expiresAt,
+    });
+    response.cookies.set(CACHE_OWNER_COOKIE, session.id, {
       sameSite: "lax",
       secure: new URL(request.url).protocol === "https:",
       path: "/",

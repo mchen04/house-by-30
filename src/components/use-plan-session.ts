@@ -22,6 +22,7 @@ interface SessionState {
   saveState: SaveState;
   localSaveRetry: number;
   authNotice: string;
+  startupValidationPending: boolean;
   // True only while the displayed plans came from the device cache *and* an
   // authoritative refresh is still in flight. Nothing about sync, the outbox or
   // what the device stores depends on it: it exists so the surfaces can reserve
@@ -40,6 +41,7 @@ type SessionAction =
   | { type: "save"; value: SaveState }
   | { type: "retry"; value: SetStateAction<number> }
   | { type: "awaiting-authority" }
+  | { type: "startup-validation"; value: boolean }
   | { type: "account-transition"; accountGeneration: number }
   | {
       type: "signed-out";
@@ -70,6 +72,8 @@ export interface PlanSessionRuntime {
   devicePersistenceRetry: AccountPersistenceRetry | null;
   rejectedWriteFailure: boolean;
   restoringAccount: string | null;
+  startupValidationPending: boolean;
+  skipNextSessionValidation: boolean;
 }
 
 const initialState: SessionState = {
@@ -82,6 +86,7 @@ const initialState: SessionState = {
   saveState: "saved",
   localSaveRetry: 0,
   authNotice: "",
+  startupValidationPending: true,
   planAwaitingAuthority: false,
 };
 
@@ -130,6 +135,8 @@ function sessionReducer(
       };
     case "awaiting-authority":
       return { ...state, planAwaitingAuthority: true };
+    case "startup-validation":
+      return { ...state, startupValidationPending: action.value };
     case "account-transition":
       return {
         ...state,
@@ -141,6 +148,7 @@ function sessionReducer(
         saveState: "saved",
         localSaveRetry: 0,
         authNotice: "",
+        startupValidationPending: false,
         planAwaitingAuthority: false,
       };
     case "signed-out":
@@ -155,6 +163,7 @@ function sessionReducer(
         saveState: "saved",
         localSaveRetry: 0,
         authNotice: action.notice,
+        startupValidationPending: false,
         planAwaitingAuthority: false,
       };
   }
@@ -190,6 +199,8 @@ export function transitionPlanSessionRuntime(
   runtime.devicePersistenceRetry = null;
   runtime.rejectedWriteFailure = false;
   runtime.restoringAccount = null;
+  runtime.startupValidationPending = false;
+  runtime.skipNextSessionValidation = false;
   return runtime.accountGeneration;
 }
 
@@ -239,6 +250,8 @@ export function usePlanSession() {
     devicePersistenceRetry: null,
     rejectedWriteFailure: false,
     restoringAccount: null,
+    startupValidationPending: true,
+    skipNextSessionValidation: false,
   });
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -282,6 +295,10 @@ export function usePlanSession() {
   );
   const markPlanAwaitingAuthority = useCallback(
     () => dispatch({ type: "awaiting-authority" }),
+    [],
+  );
+  const setStartupValidationPending = useCallback(
+    (value: boolean) => dispatch({ type: "startup-validation", value }),
     [],
   );
   const beginPlanIntent = useCallback(
@@ -336,6 +353,7 @@ export function usePlanSession() {
     setSaveState,
     setLocalSaveRetry,
     markPlanAwaitingAuthority,
+    setStartupValidationPending,
     beginPlanIntent,
     getOwnerSignal,
     beginAccount,

@@ -7,6 +7,12 @@ import {
 import { storedPlanSchema } from "@/domain/plan-schema";
 import { defaultPlanForToday } from "@/domain/plan-selection";
 import {
+  cacheOwnerStatus,
+  forgetBrowserCacheOwner,
+  rememberBrowserCacheOwner,
+  type CacheOwnerStatus,
+} from "@/offline/cache-owner";
+import {
   lastRememberedUser,
   queuedMutations,
   rememberUser,
@@ -53,6 +59,32 @@ function linkAbortSignals(signals: readonly AbortSignal[]): {
   };
 }
 
+interface CachedLaunch {
+  user: User;
+  plans: StoredPlan[];
+  owner: CacheOwnerStatus;
+}
+
+function sameUser(left: User, right: User): boolean {
+  return (
+    left.id === right.id &&
+    left.email === right.email &&
+    left.sessionId === right.sessionId
+  );
+}
+
+async function cachedLaunch(): Promise<CachedLaunch | null> {
+  const user = await lastRememberedUser();
+  if (!user) return null;
+  const owner = cacheOwnerStatus(user);
+  if (owner === "mismatch") return { user, plans: [], owner };
+  return {
+    user,
+    plans: (await restorableCachedPlans(user.id)) ?? [],
+    owner,
+  };
+}
+
 export function useAccountLifecycle(
   session: PlanSessionController,
   sync: PlanSyncController,
@@ -69,6 +101,7 @@ export function useAccountLifecycle(
     setLoading,
     setPlans,
     setSaveState,
+    setStartupValidationPending,
     setUser,
   } = session;
   const {
@@ -103,42 +136,131 @@ export function useAccountLifecycle(
   }, []);
 
   useEffect(() => {
+    const requestController = new AbortController();
     let ownerSignal = getOwnerSignal();
     void (async () => {
       const startupGeneration = runtimeRef.current.accountGeneration;
       let ownedGeneration = startupGeneration;
-      try {
-        const response = await jsonRequest(
-          "/api/bootstrap",
-          bootstrapResponseSchema,
-          { signal: ownerSignal },
+      let restored: CachedLaunch | null = null;
+      const cacheResult = cachedLaunch().then(
+        (value) => ({ success: true as const, value }),
+        (error: unknown) => ({ success: false as const, error }),
+      );
+      const bootstrapResult = jsonRequest(
+        "/api/bootstrap",
+        bootstrapResponseSchema,
+        { signal: requestController.signal },
+      ).then(
+        (value) => ({ success: true as const, value }),
+        (error: unknown) => ({ success: false as const, error }),
+      );
+
+      const restore = (
+        candidate: CachedLaunch | null,
+        allowMissingOwner: boolean,
+        validationPending: boolean,
+      ): boolean => {
+        if (
+          !candidate ||
+          candidate.plans.length === 0 ||
+          candidate.owner === "mismatch" ||
+          (candidate.owner === "missing" && !allowMissingOwner) ||
+          runtimeRef.current.accountGeneration !== ownedGeneration
+        )
+          return false;
+        const generation = beginAccount(candidate.user.id, ownerSignal);
+        if (generation === null) return false;
+        ownedGeneration = generation;
+        ownerSignal = getOwnerSignal();
+        runtimeRef.current.startupValidationPending = validationPending;
+        setStartupValidationPending(validationPending);
+        runtimeRef.current.restoringAccount = candidate.user.id;
+        setPlans(candidate.plans);
+        runtimeRef.current.plans = candidate.plans;
+        setDraft(defaultPlanForToday(candidate.plans));
+        runtimeRef.current.savedSnapshots = new Map(
+          candidate.plans.map((plan) => [plan.year, JSON.stringify(plan)]),
         );
-        if (ownerSignal.aborted) return;
+        requireAuthoritativePlanRefresh(runtimeRef.current);
+        setSaveState("offline");
+        setUser(
+          userWithLatestSession(candidate.user, latestSessionRef.current),
+        );
+        if (navigator.onLine) markPlanAwaitingAuthority();
+        if (candidate.owner === "missing")
+          rememberBrowserCacheOwner(candidate.user);
+        setLoading(false);
+        restored = candidate;
+        return true;
+      };
+
+      try {
+        const first = await Promise.race([
+          cacheResult.then((result) => ({ source: "cache" as const, result })),
+          bootstrapResult.then((result) => ({
+            source: "server" as const,
+            result,
+          })),
+        ]);
+        if (
+          first.source === "cache" &&
+          first.result.success &&
+          first.result.value?.owner === "match"
+        )
+          restore(first.result.value, false, true);
+
+        const bootstrap =
+          first.source === "server" ? first.result : await bootstrapResult;
+        if (!bootstrap.success) throw bootstrap.error;
+        if (
+          runtimeRef.current.accountGeneration !== ownedGeneration ||
+          requestController.signal.aborted
+        )
+          return;
+
+        const response = bootstrap.value;
         latestSessionRef.current = {
           userId: response.user.id,
           sessionId: response.user.sessionId,
         };
+        rememberBrowserCacheOwner(response.user);
         let canRestore = true;
         let retryRememberUser = false;
         try {
           canRestore = await rememberUser(response.user, false, ownerSignal);
         } catch {
-          if (ownerSignal.aborted) return;
+          if (runtimeRef.current.accountGeneration !== ownedGeneration) return;
           retryRememberUser = true;
         }
         if (
-          ownerSignal.aborted ||
-          runtimeRef.current.accountGeneration !== startupGeneration
+          runtimeRef.current.accountGeneration !== ownedGeneration ||
+          requestController.signal.aborted
         )
           return;
         if (!canRestore) {
+          forgetBrowserCacheOwner(response.user.sessionId);
           invalidateSession("");
+          ownedGeneration = runtimeRef.current.accountGeneration;
           return;
         }
-        const generation = beginAccount(response.user.id, ownerSignal);
-        if (generation === null) return;
-        ownedGeneration = generation;
-        ownerSignal = getOwnerSignal();
+
+        const restoredSnapshot = restored as CachedLaunch | null;
+        const restoredIdentityMatches =
+          restoredSnapshot?.user.id === response.user.id &&
+          restoredSnapshot.user.sessionId === response.user.sessionId;
+        let generation = ownedGeneration;
+        if (!restoredIdentityMatches) {
+          if (restoredSnapshot) setLoading(true);
+          const nextGeneration = beginAccount(response.user.id, ownerSignal);
+          if (nextGeneration === null) return;
+          generation = nextGeneration;
+          ownedGeneration = generation;
+          ownerSignal = getOwnerSignal();
+        }
+        runtimeRef.current.startupValidationPending = false;
+        setStartupValidationPending(false);
+        runtimeRef.current.skipNextSessionValidation = true;
+        runtimeRef.current.planRefreshNeeded = false;
         if (retryRememberUser)
           queueDevicePersistenceRetry(
             response.user.id,
@@ -158,94 +280,63 @@ export function useAccountLifecycle(
           serverPlans: response.plans,
           signal: ownerSignal,
         });
+        runtimeRef.current.restoringAccount = null;
         if (
           !ownerSignal.aborted &&
           runtimeRef.current.activeAccount === response.user.id &&
           runtimeRef.current.accountGeneration === generation
-        )
-          setUser(
-            userWithLatestSession(response.user, latestSessionRef.current),
+        ) {
+          const nextUser = userWithLatestSession(
+            response.user,
+            latestSessionRef.current,
           );
+          if (!restoredSnapshot || !sameUser(restoredSnapshot.user, nextUser))
+            setUser(nextUser);
+        }
       } catch (error) {
         if (
-          ownerSignal.aborted ||
-          runtimeRef.current.accountGeneration !== ownedGeneration
+          runtimeRef.current.accountGeneration !== ownedGeneration ||
+          requestController.signal.aborted
         )
           return;
+        runtimeRef.current.startupValidationPending = false;
+        setStartupValidationPending(false);
         if (error instanceof HttpError && error.status === 409) {
           cancelDevicePersistenceRetry();
           invalidateSession(
             "The active account changed in another tab. Sign in again.",
           );
-        } else if (!(error instanceof HttpError) || error.status !== 401) {
-          let remembered: User | null = null;
-          let offlinePlans: StoredPlan[] = [];
-          try {
-            remembered = await lastRememberedUser();
-            if (remembered) {
-              const generation = beginAccount(remembered.id, ownerSignal);
-              if (generation === null) return;
-              ownedGeneration = generation;
-              ownerSignal = getOwnerSignal();
-              runtimeRef.current.restoringAccount = remembered.id;
-              offlinePlans = (await restorableCachedPlans(remembered.id)) ?? [];
-              if (
-                ownerSignal.aborted ||
-                runtimeRef.current.accountGeneration !== generation ||
-                runtimeRef.current.activeAccount !== remembered.id
-              )
-                return;
-            }
-          } catch {
-            if (runtimeRef.current.accountGeneration !== ownedGeneration)
-              return;
-            setSaveState("local-error");
+          ownedGeneration = runtimeRef.current.accountGeneration;
+        } else if (error instanceof HttpError && error.status === 401) {
+          const cached = restored as CachedLaunch | null;
+          if (cached?.user.sessionId)
+            forgetBrowserCacheOwner(cached.user.sessionId);
+          invalidateSession("");
+          ownedGeneration = runtimeRef.current.accountGeneration;
+        } else {
+          if (!restored) {
+            const cached = await cacheResult;
+            if (!cached.success) setSaveState("local-error");
+            else restore(cached.value, true, false);
           }
-          if (
-            !ownerSignal.aborted &&
-            remembered &&
-            runtimeRef.current.restoringAccount === remembered.id &&
-            offlinePlans.length > 0
-          ) {
-            setPlans(offlinePlans);
-            runtimeRef.current.plans = offlinePlans;
-            setDraft(defaultPlanForToday(offlinePlans));
-            runtimeRef.current.savedSnapshots = new Map(
-              offlinePlans.map((plan) => [plan.year, JSON.stringify(plan)]),
-            );
-            requireAuthoritativePlanRefresh(runtimeRef.current);
+          if (restored) {
             setSaveState("offline");
-            setUser(
-              userWithLatestSession(remembered, latestSessionRef.current),
-            );
-            // Nothing above changed: the same plans were restored from the
-            // same cache at the same moment, and the outbox, the service
-            // worker and the database are untouched. The one added fact is
-            // that these numbers are known-provisional — `planRefreshNeeded`
-            // is set and `setUser` above is what starts the authoritative
-            // refresh — so the surfaces reserve the headline box until it
-            // lands instead of painting a figure that changes meaning (C9,
-            // rule 3). A device that cannot reach the server gets no refresh
-            // to wait for, so its cached plan is its settled value and it
-            // renders normally.
             if (navigator.onLine) markPlanAwaitingAuthority();
-          } else if (remembered) {
+          } else {
             invalidateSession("");
             ownedGeneration = runtimeRef.current.accountGeneration;
           }
-          if (runtimeRef.current.restoringAccount === remembered?.id)
-            runtimeRef.current.restoringAccount = null;
-        } else {
-          invalidateSession("");
+          runtimeRef.current.restoringAccount = null;
         }
       } finally {
         if (
-          !ownerSignal.aborted &&
-          runtimeRef.current.accountGeneration === ownedGeneration
+          runtimeRef.current.accountGeneration === ownedGeneration &&
+          !requestController.signal.aborted
         )
           setLoading(false);
       }
     })();
+    return () => requestController.abort();
   }, [
     runtimeRef,
     beginAccount,
@@ -259,6 +350,7 @@ export function useAccountLifecycle(
     setLoading,
     setPlans,
     setSaveState,
+    setStartupValidationPending,
     setUser,
   ]);
 
@@ -329,6 +421,7 @@ export function useAccountLifecycle(
           userId: nextUser.id,
           sessionId: nextUser.sessionId,
         };
+      rememberBrowserCacheOwner(nextUser);
       replaceCloseOwner();
       const generation = beginAccount(nextUser.id, submissionSignal);
       if (generation === null) return;
@@ -450,6 +543,8 @@ export function useAccountLifecycle(
           () => requestRemoteAccountClosure(closingUser, mode, ownerSignal),
           linkedLockSignal.signal,
         );
+        if (closingUser.sessionId)
+          forgetBrowserCacheOwner(closingUser.sessionId);
         cancelDevicePersistenceRetry(closingUser.id);
         const notice =
           closure.remoteStatus === "indeterminate"

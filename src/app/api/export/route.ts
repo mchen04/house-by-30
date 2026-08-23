@@ -19,7 +19,7 @@ export async function GET(request: Request): Promise<Response> {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Content-Disposition": 'attachment; filename="house-by-30-export.json"',
-      "Cache-Control": "no-store",
+      "Cache-Control": "private, no-store",
     },
   });
 }

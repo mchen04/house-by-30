@@ -32,7 +32,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         {children}
-        <PwaRuntime />
+        <PwaRuntime buildId={process.env.NEXT_DEPLOYMENT_ID ?? "development"} />
       </body>
     </html>
   );

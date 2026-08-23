@@ -2,6 +2,7 @@ import { z } from "zod";
 import { storedPlanSchema } from "./plan-schema";
 
 export const EXPECTED_SESSION_HEADER = "X-Kyle-Session-Id";
+export const CACHE_OWNER_COOKIE = "kyle_cache_owner";
 export const sessionIdSchema = z.uuid();
 
 export const userSchema = z.object({
