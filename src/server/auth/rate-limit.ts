@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import type { Sql } from "postgres";
+import { errorResponse } from "@/server/http";
 
 export type AuthenticationAction = "login" | "signup";
 
@@ -170,11 +171,10 @@ export function consumeAuthenticationIdentityAttempt(
 export function authenticationRateLimitResponse(
   limit: AuthenticationRateLimit,
 ): Response {
-  return Response.json(
-    { error: "Too many attempts. Wait before trying again." },
-    {
-      status: 429,
-      headers: { "Retry-After": String(limit.retryAfterSeconds) },
-    },
+  const response = errorResponse(
+    429,
+    "Too many attempts. Wait before trying again.",
   );
+  response.headers.set("Retry-After", String(limit.retryAfterSeconds));
+  return response;
 }

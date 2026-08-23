@@ -1,5 +1,13 @@
 import type { ZodType } from "zod";
 
+export const PRIVATE_API_CACHE_CONTROL = "private, no-store";
+
+function privateResponseInit(init?: ResponseInit): ResponseInit {
+  const headers = new Headers(init?.headers);
+  headers.set("Cache-Control", PRIVATE_API_CACHE_CONTROL);
+  return { ...init, headers };
+}
+
 export function errorResponse(
   status: number,
   message: string,
@@ -7,7 +15,7 @@ export function errorResponse(
 ): Response {
   return Response.json(
     { error: message, ...(details ? { details } : {}) },
-    { status },
+    privateResponseInit({ status }),
   );
 }
 
@@ -84,5 +92,5 @@ export function validatedJsonResponse<T>(
   const parsed = schema.safeParse(value);
   if (!parsed.success)
     return errorResponse(500, "The server produced an invalid response.");
-  return Response.json(parsed.data, init);
+  return Response.json(parsed.data, privateResponseInit(init));
 }

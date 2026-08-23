@@ -129,5 +129,15 @@ describe("login throttling", () => {
         sessionId: "00000000-0000-4000-8000-000000000011",
       },
     });
+    const cookies = response.headers.getSetCookie().join("\n");
+    expect(cookies).toContain("kyle_session=opaque-token");
+    expect(cookies).toContain(
+      "kyle_cache_owner=00000000-0000-4000-8000-000000000011",
+    );
+    expect(
+      response.headers
+        .getSetCookie()
+        .find((cookie) => cookie.startsWith("kyle_cache_owner=")),
+    ).not.toContain("HttpOnly");
   });
 });

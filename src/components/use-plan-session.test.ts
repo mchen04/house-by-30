@@ -37,6 +37,8 @@ function dirtyRuntime(): PlanSessionRuntime {
     },
     rejectedWriteFailure: true,
     restoringAccount: "account-a",
+    startupValidationPending: false,
+    skipNextSessionValidation: false,
   };
 }
 

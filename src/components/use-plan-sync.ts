@@ -72,6 +72,7 @@ export function usePlanSync(session: PlanSessionController) {
     user,
     draft,
     localSaveRetry,
+    startupValidationPending,
     runtimeRef,
     getOwnerSignal,
     setDraft,
@@ -347,13 +348,18 @@ export function usePlanSync(session: PlanSessionController) {
               await publishReconciledPlans(response.plans, batchIntentRevision);
             }
           }
-          if (!didSync && isCurrentAccount())
-            await jsonRequest(
-              "/api/auth/session",
-              userResponseSchema,
-              { signal: requestController.signal },
-              account.id,
-            );
+          if (isCurrentAccount()) {
+            if (didSync || runtimeRef.current.skipNextSessionValidation) {
+              runtimeRef.current.skipNextSessionValidation = false;
+            } else {
+              await jsonRequest(
+                "/api/auth/session",
+                userResponseSchema,
+                { signal: requestController.signal },
+                account.id,
+              );
+            }
+          }
           if (hadRejection && isCurrentAccount()) {
             setReconciliationState("rejected");
           } else if (isCurrentAccount()) {
@@ -783,12 +789,12 @@ export function usePlanSync(session: PlanSessionController) {
   ]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || startupValidationPending) return;
     const onOnline = () => void reconcileFor(user);
     window.addEventListener("online", onOnline);
     if (navigator.onLine) void reconcileFor(user);
     return () => window.removeEventListener("online", onOnline);
-  }, [reconcileFor, user]);
+  }, [reconcileFor, startupValidationPending, user]);
 
   useEffect(() => {
     if (!draft || !user) return;

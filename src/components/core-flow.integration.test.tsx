@@ -269,6 +269,7 @@ describe("daily cockpit integration contract", () => {
       configurable: true,
       value: false,
     });
+    document.cookie = "kyle_cache_owner=; Max-Age=0; Path=/";
   });
 
   afterEach(async () => {
@@ -276,6 +277,7 @@ describe("daily cockpit integration contract", () => {
     container.remove();
     await clearRememberedUser();
     await clearAccountCache(user.id);
+    document.cookie = "kyle_cache_owner=; Max-Age=0; Path=/";
     vi.unstubAllGlobals();
     delete (
       globalThis as typeof globalThis & {
@@ -515,6 +517,7 @@ describe("daily cockpit integration contract", () => {
     act(() => root.unmount());
     root = createRoot(container);
     mounted = undefined;
+    jsonRequest.mockClear();
     await mount();
     expect(mounted!.session.saveState).toBe("offline");
     expect(mounted!.session.draft).toMatchObject({
@@ -565,6 +568,142 @@ describe("daily cockpit integration contract", () => {
     expect(mounted!.session.saveState).toBe("saved");
     expect(mounted!.session.draft?.transactions).toContainEqual(
       expect.objectContaining({ title: "Offline coffee" }),
+    );
+  });
+
+  it("paints the matching device cache before a slow bootstrap finishes", async () => {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
+    let mounted: MountedSync | undefined;
+    let launch = 0;
+    let releaseBootstrap = () => undefined as void;
+    const bootstrapGate = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    const authoritative = {
+      ...baseline,
+      grossSalaryCents: baseline.grossSalaryCents + 100_000,
+    };
+
+    jsonRequest.mockImplementation(async (url: string) => {
+      if (url === "/api/bootstrap") {
+        launch += 1;
+        if (launch === 1) return { user, plans: [baseline] };
+        await bootstrapGate;
+        return { user, plans: [authoritative] };
+      }
+      if (url === "/api/auth/session") return { user };
+      return { plans: [baseline] };
+    });
+
+    const mount = async () => {
+      act(() => {
+        root.render(
+          <LifecycleHarness
+            expose={(value) => {
+              mounted = value;
+            }}
+          />,
+        );
+      });
+    };
+
+    await mount();
+    await settleUntil(
+      () => mounted?.session.phase === "ready",
+      "initial ready account lifecycle",
+    );
+    document.cookie = `kyle_cache_owner=${user.sessionId}; Path=/; SameSite=Lax`;
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    mounted = undefined;
+    await mount();
+    for (let attempt = 0; attempt < 20; attempt += 1) await settle();
+    const cachedMount = mounted as MountedSync | undefined;
+    const paintedBeforeBootstrap = cachedMount?.session.phase === "ready";
+    const cachedSalary = cachedMount?.session.draft?.grossSalaryCents;
+
+    releaseBootstrap();
+    await settleUntil(
+      () =>
+        mounted?.session.draft?.grossSalaryCents ===
+        authoritative.grossSalaryCents,
+      "authoritative bootstrap",
+    );
+
+    expect(paintedBeforeBootstrap).toBe(true);
+    expect(cachedSalary).toBe(baseline.grossSalaryCents);
+    expect(
+      jsonRequest.mock.calls.filter(([url]) => url === "/api/auth/session"),
+    ).toHaveLength(0);
+  });
+
+  it("does not paint a private cache owned by another session", async () => {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
+    let mounted: MountedSync | undefined;
+    let launch = 0;
+    let releaseBootstrap = () => undefined as void;
+    const bootstrapGate = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    const authoritative = {
+      ...baseline,
+      grossSalaryCents: baseline.grossSalaryCents + 200_000,
+    };
+
+    jsonRequest.mockImplementation(async (url: string) => {
+      if (url === "/api/bootstrap") {
+        launch += 1;
+        if (launch === 1) return { user, plans: [baseline] };
+        await bootstrapGate;
+        return { user, plans: [authoritative] };
+      }
+      if (url === "/api/auth/session") return { user };
+      return { plans: [baseline] };
+    });
+
+    const mount = async () => {
+      act(() => {
+        root.render(
+          <LifecycleHarness
+            expose={(value) => {
+              mounted = value;
+            }}
+          />,
+        );
+      });
+    };
+
+    await mount();
+    await settleUntil(
+      () => mounted?.session.phase === "ready",
+      "initial ready account lifecycle",
+    );
+    document.cookie =
+      "kyle_cache_owner=00000000-0000-4000-8000-000000000099; Path=/; SameSite=Lax";
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    mounted = undefined;
+    await mount();
+    for (let attempt = 0; attempt < 20; attempt += 1) await settle();
+    const blockedMount = mounted as MountedSync | undefined;
+
+    expect(blockedMount?.session.phase).toBe("loading");
+    expect(blockedMount?.session.draft).toBeNull();
+
+    releaseBootstrap();
+    await settleUntil(
+      () =>
+        mounted?.session.draft?.grossSalaryCents ===
+        authoritative.grossSalaryCents,
+      "authoritative bootstrap",
     );
   });
 
