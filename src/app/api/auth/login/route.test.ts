@@ -37,7 +37,7 @@ vi.mock("@/server/database", () => ({ database: () => ({}) }));
 
 import { POST } from "./route";
 
-function loginRequest(): Request {
+function loginRequest(password = "correct horse battery staple"): Request {
   return new Request("https://example.test/api/auth/login", {
     method: "POST",
     headers: {
@@ -46,7 +46,7 @@ function loginRequest(): Request {
     },
     body: JSON.stringify({
       email: "Person@Example.com",
-      password: "correct horse battery staple",
+      password,
     }),
   });
 }
@@ -139,5 +139,18 @@ describe("login throttling", () => {
         .getSetCookie()
         .find((cookie) => cookie.startsWith("kyle_cache_owner=")),
     ).not.toContain("HttpOnly");
+  });
+
+  it("checks a password shorter than the former minimum", async () => {
+    authenticateUser.mockResolvedValue(null);
+
+    const response = await POST(loginRequest("short"));
+
+    expect(response.status).toBe(401);
+    expect(authenticateUser).toHaveBeenCalledWith(
+      {},
+      "person@example.com",
+      "short",
+    );
   });
 });

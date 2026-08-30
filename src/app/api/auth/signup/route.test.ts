@@ -33,7 +33,7 @@ vi.mock("@/server/database", () => ({ database: () => ({}) }));
 
 import { POST } from "./route";
 
-function signupRequest(): Request {
+function signupRequest(password = "correct horse battery staple"): Request {
   return new Request("https://example.test/api/auth/signup", {
     method: "POST",
     headers: {
@@ -42,7 +42,7 @@ function signupRequest(): Request {
     },
     body: JSON.stringify({
       email: "New@Example.com",
-      password: "correct horse battery staple",
+      password,
     }),
   });
 }
@@ -115,6 +115,17 @@ describe("signup throttling", () => {
     );
     await expect(response.json()).resolves.toEqual({ accepted: true });
     expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("accepts a password shorter than the former minimum", async () => {
+    const response = await POST(signupRequest("short"));
+
+    expect(response.status).toBe(202);
+    expect(registerPublicUser).toHaveBeenCalledWith(
+      {},
+      "new@example.com",
+      "short",
+    );
   });
 
   it("returns the same generic result when registration declines the identity", async () => {
