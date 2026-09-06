@@ -112,14 +112,8 @@ export function AuthView({
               autoComplete={
                 mode === "signup" ? "new-password" : "current-password"
               }
-              minLength={10}
               required
             />
-            {/* C9 — rendered in both modes. `minLength` is 10 either way, so
-                the line is true either way, and a hint that appears only in
-                one mode changed the panel's height and shifted the whole
-                vertically-centred panel when the modes were toggled. */}
-            <small>At least 10 characters.</small>
           </label>
           {error && (
             <p className={styles.formError} role="alert">
