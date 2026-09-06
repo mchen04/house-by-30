@@ -114,7 +114,7 @@ Tax tables are JSON data keyed by year. Federal filing-status schedules and all 
 
 The production target is a Node-capable Next.js host with a server-only `DATABASE_URL`. Neon is the production database. Static public assets and the service worker are served by the same origin. No background worker, email service, bank integration, or paid dependency is required.
 
-Automatic Git deployments are disabled. A production release requires an explicit operator command after verification and migration review.
+Vercel automatically builds and releases merges to `main` from `mchen04/house-by-30`. Other branches do not trigger deployments. Verification and migration review happen before merging. Required backward-compatible migrations run before the merge; deployment builds do not run migrations. The production URL is <https://kyle-financial.vercel.app>.
 
 Each build has one stable deployment ID. The ID appears in the worker bytes, shell cache name, page prop, and response header.
 
