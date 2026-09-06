@@ -63,14 +63,22 @@ pnpm start
 
 Provide one stable deployment ID per build. Vercel uses `VERCEL_GIT_COMMIT_SHA`. Other hosts can set `NEXT_DEPLOYMENT_ID` or `GIT_SHA`. The local Git SHA is the final fallback.
 
-`vercel.json` disables automatic Git deployments. A merge does not release the app. Production release stays an explicit `vercel deploy --prod` operation.
+`vercel.json` enables automatic deployments from `main` only. Vercel connects
+to `mchen04/house-by-30` with `main` as the production branch. Each merge
+builds and releases the app at <https://kyle-financial.vercel.app>.
+Run `pnpm verify` and review migrations before merging. Apply required
+backward-compatible migrations before the merge; the deployment build does
+not run migrations.
 
 For Vercel, create or link the project, add `DATABASE_URL` as an encrypted
 Production environment variable, and run `pnpm db:migrate` once from a trusted
-local shell against the production database before deploying. Then deploy with
-`vercel deploy --prod`, exercise public signup, plan creation, export, and
-deletion on the live URL with disposable data, run the production Lighthouse
-gate, and perform the iPhone install check. Migrations are ordered and
+local shell against the production database before the first deployment.
+After merging, confirm the automatic deployment reaches `Ready` and the
+production URL serves the merged commit's build ID. Check the live sign-in
+form, manifest, and service-worker update without changing user data. Run
+automated authentication and data tests only against an isolated local
+database. `vercel deploy --prod` remains available for an explicit manual
+release. Migrations are ordered and
 idempotent; never reset the production schema during deployment. Roll back
 application code by redeploying the prior known-good commit—do not roll back or
 delete data migrations.
