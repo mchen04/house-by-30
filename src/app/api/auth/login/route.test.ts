@@ -141,16 +141,39 @@ describe("login throttling", () => {
     ).not.toContain("HttpOnly");
   });
 
-  it("checks a password shorter than the former minimum", async () => {
-    authenticateUser.mockResolvedValue(null);
+  it.each(
+    ["x", " ", "short", "x".repeat(200), "x".repeat(201), "x".repeat(513)].map(
+      (password) => ({ password, length: password.length }),
+    ),
+  )(
+    "checks an entered password of length $length without changing it",
+    async ({ password }) => {
+      authenticateUser.mockResolvedValue(null);
 
-    const response = await POST(loginRequest("short"));
+      const response = await POST(loginRequest(password));
 
-    expect(response.status).toBe(401);
-    expect(authenticateUser).toHaveBeenCalledWith(
-      {},
-      "person@example.com",
-      "short",
-    );
-  });
+      expect(response.status).toBe(401);
+      expect(authenticateUser).toHaveBeenCalledWith(
+        {},
+        "person@example.com",
+        password,
+      );
+    },
+  );
+
+  it.each(["", null, 42, undefined])(
+    "rejects an absent or invalid password: %s",
+    async (password) => {
+      const request = loginRequest();
+      const response = await POST(
+        new Request(request, {
+          body: JSON.stringify({ email: "person@example.com", password }),
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(authenticateUser).not.toHaveBeenCalled();
+      expect(consumeAuthenticationIdentityAttempt).not.toHaveBeenCalled();
+    },
+  );
 });

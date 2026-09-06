@@ -117,16 +117,39 @@ describe("signup throttling", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
   });
 
-  it("accepts a password shorter than the former minimum", async () => {
-    const response = await POST(signupRequest("short"));
+  it.each(
+    ["x", " ", "short", "x".repeat(200), "x".repeat(201), "x".repeat(513)].map(
+      (password) => ({ password, length: password.length }),
+    ),
+  )(
+    "accepts an entered password of length $length without changing it",
+    async ({ password }) => {
+      const response = await POST(signupRequest(password));
 
-    expect(response.status).toBe(202);
-    expect(registerPublicUser).toHaveBeenCalledWith(
-      {},
-      "new@example.com",
-      "short",
-    );
-  });
+      expect(response.status).toBe(202);
+      expect(registerPublicUser).toHaveBeenCalledWith(
+        {},
+        "new@example.com",
+        password,
+      );
+    },
+  );
+
+  it.each(["", null, 42, undefined])(
+    "rejects an absent or invalid password: %s",
+    async (password) => {
+      const request = signupRequest();
+      const response = await POST(
+        new Request(request, {
+          body: JSON.stringify({ email: "new@example.com", password }),
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(registerPublicUser).not.toHaveBeenCalled();
+      expect(consumeAuthenticationIdentityAttempt).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns the same generic result when registration declines the identity", async () => {
     registerPublicUser.mockResolvedValue(undefined);

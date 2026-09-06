@@ -7,7 +7,7 @@ export const credentialsSchema = z.object({
     .email()
     .max(320)
     .transform((value) => value.trim().toLowerCase()),
-  password: z.string().max(200),
+  password: z.string().nonempty(),
 });
 
 export const signupCredentialsSchema = credentialsSchema;
