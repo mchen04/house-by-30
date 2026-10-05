@@ -1,9 +1,13 @@
+import fc from "fast-check";
+import { diffPlanMutations } from "@/domain/sync";
+import { storedPlanSchema } from "@/domain/plan-schema";
 import { describe, expect, it, vi } from "vitest";
 import type { BudgetCategory, TransactionEntry } from "@/domain/budget";
 import { storedPlan } from "@/test/fixtures/plans";
 import { commitFastLogEntry } from "@/domain/fast-log";
 import type { StoredPlan } from "@/domain/stored-plan";
 import {
+  durableBaseline,
   resetSerializedPlans,
   serializedPlan,
   completeServerPlans,
@@ -897,5 +901,143 @@ describe("cached plan serialization", () => {
     expect(intentAwaitingDurableWrite([{ ...edited }], snapshots)).toBe(false);
     snapshots.set(2026, serializedPlan(durable));
     expect(intentAwaitingDurableWrite([edited], snapshots)).toBe(true);
+  });
+});
+
+describe("durable baseline reuse", () => {
+  const categoryId = "00000000-0000-4000-8000-000000000a01";
+  const base: StoredPlan = storedPlan(2026, {
+    startingSavingsCents: 50_000,
+    expenses: [
+      {
+        id: categoryId,
+        name: "Food",
+        group: "Daily",
+        cadence: "monthly",
+        amountCents: 40_000,
+        sortOrder: 0,
+        guidanceBucket: "needs",
+        colorToken: "blue",
+        archived: false,
+      },
+    ],
+    transactions: [
+      {
+        id: "00000000-0000-4000-8000-000000000a02",
+        categoryId,
+        amountCents: 1_500,
+        title: "Lunch",
+        note: "with team",
+        date: "2026-02-03",
+        createdAt: "2026-02-03T00:00:00.000Z",
+        updatedAt: "2026-02-03T00:00:00.000Z",
+      },
+    ],
+  });
+  const ids = () => {
+    let n = 0;
+    return () =>
+      `00000000-0000-4000-8000-${String((n += 1)).padStart(12, "0")}`;
+  };
+  const diff = (previous: StoredPlan, next: StoredPlan) =>
+    diffPlanMutations(previous, next, "2026-03-01T00:00:00.000Z", ids());
+  const parsed = (snapshot: string) =>
+    storedPlanSchema.parse(JSON.parse(snapshot));
+
+  // A held object as the app produces it: optional fields may be explicitly
+  // undefined, which JSON drops but the object keeps.
+  const heldVariant = fc.record({
+    salary: fc.integer({ min: 0, max: 50_000_000 }),
+    savings: fc.option(fc.integer({ min: 0, max: 900_000 }), {
+      nil: undefined,
+    }),
+    note: fc.option(fc.constantFrom("with team", "solo"), { nil: undefined }),
+    title: fc.constantFrom("Lunch", "Dinner"),
+  });
+  const edit = fc.record({
+    salary: fc.option(fc.integer({ min: 0, max: 50_000_000 }), {
+      nil: undefined,
+    }),
+    clearSavings: fc.boolean(),
+    note: fc.option(fc.constantFrom("edited", ""), { nil: undefined }),
+    dropNote: fc.boolean(),
+    addTransaction: fc.boolean(),
+    removeTransaction: fc.boolean(),
+  });
+
+  it("diffs a reused copy exactly like the schema-read snapshot", () => {
+    fc.assert(
+      fc.property(heldVariant, edit, (variant, change) => {
+        const held: StoredPlan = {
+          ...base,
+          grossSalaryCents: variant.salary,
+          startingSavingsCents: variant.savings,
+          transactions: [
+            {
+              ...base.transactions[0],
+              title: variant.title,
+              note: variant.note,
+            },
+          ],
+        };
+        const snapshot = serializedPlan(held);
+        const transaction = { ...held.transactions[0] };
+        if (change.note !== undefined && change.note !== "")
+          transaction.note = change.note;
+        if (change.dropNote) delete transaction.note;
+        const next: StoredPlan = {
+          ...held,
+          grossSalaryCents: change.salary ?? held.grossSalaryCents,
+          startingSavingsCents: change.clearSavings
+            ? undefined
+            : held.startingSavingsCents,
+          transactions: change.removeTransaction
+            ? []
+            : [
+                transaction,
+                ...(change.addTransaction
+                  ? [
+                      {
+                        id: "00000000-0000-4000-8000-000000000a03",
+                        categoryId,
+                        amountCents: 900,
+                        title: "Coffee",
+                        date: "2026-02-04",
+                        createdAt: "2026-02-04T00:00:00.000Z",
+                        updatedAt: "2026-02-04T00:00:00.000Z",
+                      },
+                    ]
+                  : []),
+              ],
+        };
+
+        expect(durableBaseline(snapshot, held)).toBe(held);
+        expect(diff(durableBaseline(snapshot, held), next)).toEqual(
+          diff(parsed(snapshot), next),
+        );
+      }),
+      { numRuns: 400 },
+    );
+  });
+
+  it("reads the snapshot through the schema when the held copy is stale or missing", () => {
+    const older = base;
+    const newer = { ...base, grossSalaryCents: base.grossSalaryCents + 100 };
+    // Another write advanced the durable snapshot; the held object is older.
+    const snapshot = serializedPlan(newer);
+
+    const fromStale = durableBaseline(snapshot, older);
+    expect(fromStale).not.toBe(older);
+    expect(fromStale).toEqual(parsed(snapshot));
+    expect(fromStale.grossSalaryCents).toBe(newer.grossSalaryCents);
+
+    const fromNothing = durableBaseline(snapshot, undefined);
+    expect(fromNothing).toEqual(parsed(snapshot));
+  });
+
+  it("still rejects a snapshot the schema rejects when nothing valid is held", () => {
+    const corrupted = JSON.stringify({ ...base, year: "not a year" });
+    expect(() => durableBaseline(corrupted, base)).toThrow();
+    expect(() => durableBaseline(corrupted, undefined)).toThrow();
   });
 });

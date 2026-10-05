@@ -6,7 +6,6 @@ import {
   type PlanRevision,
   type User,
 } from "@/domain/api-contracts";
-import { storedPlanSchema } from "@/domain/plan-schema";
 import { defaultPlanForToday } from "@/domain/plan-selection";
 import { diffPlanMutations } from "@/domain/sync";
 import {
@@ -31,6 +30,7 @@ import { recoverPlanCreationWithBackoff } from "./onboarding-recovery";
 import {
   canPublishPlanSnapshot,
   cancelAccountPersistenceRetry,
+  durableBaseline,
   completeServerPlans,
   confirmPublishedPlans,
   enqueueSerializedIntent,
@@ -180,6 +180,9 @@ export function usePlanSync(session: PlanSessionController) {
         runtimeRef.current.savedSnapshots = new Map(
           nextPlans.map((plan) => [plan.year, serializedPlan(plan)]),
         );
+        runtimeRef.current.savedSnapshotPlans = new Map(
+          nextPlans.map((plan) => [plan.year, plan]),
+        );
         runtimeRef.current.confirmedPlans = new Map();
         if (confirmable)
           confirmPublishedPlans(
@@ -294,6 +297,9 @@ export function usePlanSync(session: PlanSessionController) {
         setPlans(reconciledPlans);
         runtimeRef.current.savedSnapshots = new Map(
           reconciledPlans.map((plan) => [plan.year, serializedPlan(plan)]),
+        );
+        runtimeRef.current.savedSnapshotPlans = new Map(
+          reconciledPlans.map((plan) => [plan.year, plan]),
         );
         confirmPublishedPlans(
           runtimeRef.current.confirmedPlans,
@@ -508,7 +514,10 @@ export function usePlanSync(session: PlanSessionController) {
             runtimeRef.current.accountGeneration !== generation
           )
             return;
-          const previous = storedPlanSchema.parse(JSON.parse(priorSnapshot));
+          const previous = durableBaseline(
+            priorSnapshot,
+            runtimeRef.current.savedSnapshotPlans.get(changedDraft.year),
+          );
           const mutationTime = Math.max(
             Date.now(),
             runtimeRef.current.lastMutationTime + 1,
@@ -544,6 +553,10 @@ export function usePlanSync(session: PlanSessionController) {
             return;
           if (result === "persisted") {
             runtimeRef.current.savedSnapshots.set(changedDraft.year, snapshot);
+            runtimeRef.current.savedSnapshotPlans.set(
+              changedDraft.year,
+              changedDraft,
+            );
             // The device took the write, so whatever an earlier unload could
             // not park is now somewhere that survives this document after all.
             publishUndurableUnloadIntent(false);

@@ -55,6 +55,8 @@ type SessionAction =
 
 export interface PlanSessionRuntime {
   savedSnapshots: Map<number, string>;
+  /** Per year, the plan object `savedSnapshots` was serialized from. */
+  savedSnapshotPlans: Map<number, StoredPlan>;
   confirmedPlans: ConfirmedServerPlans;
   plans: StoredPlan[];
   activeAccount: string | null;
@@ -183,6 +185,7 @@ export function transitionPlanSessionRuntime(
     window.clearTimeout(runtime.syncTimer);
   runtime.reconcileAbortController?.abort();
   runtime.savedSnapshots = new Map();
+  runtime.savedSnapshotPlans = new Map();
   runtime.confirmedPlans = new Map();
   resetSerializedPlans();
   runtime.plans = [];
@@ -236,6 +239,7 @@ export function usePlanSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialState);
   const runtimeRef = useRef<PlanSessionRuntime>({
     savedSnapshots: new Map(),
+    savedSnapshotPlans: new Map(),
     confirmedPlans: new Map(),
     plans: [],
     activeAccount: null,

@@ -182,6 +182,9 @@ export function useAccountLifecycle(
         runtimeRef.current.savedSnapshots = new Map(
           candidate.plans.map((plan) => [plan.year, serializedPlan(plan)]),
         );
+        runtimeRef.current.savedSnapshotPlans = new Map(
+          candidate.plans.map((plan) => [plan.year, plan]),
+        );
         requireAuthoritativePlanRefresh(runtimeRef.current);
         setSaveState("offline");
         setUser(

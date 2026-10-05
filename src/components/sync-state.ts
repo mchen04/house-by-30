@@ -103,6 +103,21 @@ export function resetSerializedPlans(): void {
   serializedPlans = new WeakMap();
 }
 
+/**
+ * The durable baseline a local edit is diffed against. The plan object the
+ * snapshot was serialized from is reused only when it still serializes to
+ * exactly that snapshot; anything else re-reads the snapshot through the
+ * schema, as before.
+ */
+export function durableBaseline(
+  snapshot: string,
+  held: StoredPlan | undefined,
+): StoredPlan {
+  return held !== undefined && serializedPlan(held) === snapshot
+    ? held
+    : storedPlanSchema.parse(JSON.parse(snapshot));
+}
+
 /** Plans the session is holding that differ from what this device last stored. */
 function plansDivergingFromDurableState(
   plans: readonly StoredPlan[],
