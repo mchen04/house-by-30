@@ -9,7 +9,7 @@ import {
 import type { StoredPlan } from "./stored-plan";
 import { canonicalJson, parseSyncTarget, type SyncMutation } from "./sync";
 import {
-  applyDecodedEntityMutation,
+  applyDecodedEntityMutationInPlace,
   decodeEntitySyncMutation,
   type DecodedEntityMutation,
   type MutationMetadata,
@@ -153,7 +153,28 @@ export function applyDecodedSyncMutation(
   plan: StoredPlan,
   mutation: DecodedSyncMutation,
 ): StoredPlan {
+  return applyDecodedSyncMutations(plan, [mutation]);
+}
+
+/**
+ * Projects mutations in order onto one copy of the plan. Copying once per batch
+ * instead of once per mutation keeps a batch linear in the plan size.
+ */
+export function applyDecodedSyncMutations(
+  plan: StoredPlan,
+  mutations: readonly DecodedSyncMutation[],
+): StoredPlan {
   const next = structuredClone(plan);
+  for (const mutation of mutations)
+    applyDecodedSyncMutationInPlace(next, mutation);
+  return next;
+}
+
+/** Applies the mutation to a plan the caller exclusively owns. */
+export function applyDecodedSyncMutationInPlace(
+  next: StoredPlan,
+  mutation: DecodedSyncMutation,
+): void {
   if (mutation.kind === "scalar") {
     switch (mutation.field) {
       case "stateCode":
@@ -199,7 +220,7 @@ export function applyDecodedSyncMutation(
         next.startingSavingsCents = mutation.value;
         break;
     }
-    return next;
+    return;
   }
-  return applyDecodedEntityMutation(plan, mutation);
+  applyDecodedEntityMutationInPlace(next, mutation);
 }

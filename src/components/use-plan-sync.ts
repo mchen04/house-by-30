@@ -3,9 +3,9 @@ import {
   plansResponseSchema,
   syncResponseSchema,
   userResponseSchema,
+  type PlanRevision,
   type User,
 } from "@/domain/api-contracts";
-import { storedPlanSchema } from "@/domain/plan-schema";
 import { defaultPlanForToday } from "@/domain/plan-selection";
 import { diffPlanMutations } from "@/domain/sync";
 import {
@@ -30,9 +30,13 @@ import { recoverPlanCreationWithBackoff } from "./onboarding-recovery";
 import {
   canPublishPlanSnapshot,
   cancelAccountPersistenceRetry,
+  durableBaseline,
+  completeServerPlans,
+  confirmPublishedPlans,
   enqueueSerializedIntent,
   intentAwaitingDurableWrite,
   isCurrentAccountLifecycle,
+  knownPlanRevisions,
   mergePlansWithLocalIntent,
   planIntentForYear,
   publishDurabilityGap,
@@ -45,6 +49,7 @@ import {
   replacePlanIntent,
   resolvePlanWriteSuccess,
   runDevicePersistenceRetry,
+  serializedPlan,
   unflushedIntentMutations,
 } from "./sync-state";
 import { registerUnloadIntentFlush } from "./document-exit";
@@ -128,6 +133,7 @@ export function usePlanSync(session: PlanSessionController) {
         selectedYear?: number;
         generation?: number;
         serverPlans?: StoredPlan[];
+        serverPlanRevisions?: PlanRevision[];
         signal?: AbortSignal;
       } = {},
     ) => {
@@ -141,7 +147,10 @@ export function usePlanSync(session: PlanSessionController) {
       const loadRevision = ++runtimeRef.current.planLoadRevision;
       const intentRevision = runtimeRef.current.intentRevision;
       const response = options.serverPlans
-        ? { plans: options.serverPlans }
+        ? {
+            plans: options.serverPlans,
+            planRevisions: options.serverPlanRevisions,
+          }
         : await jsonRequest(
             "/api/plans",
             plansResponseSchema,
@@ -149,7 +158,9 @@ export function usePlanSync(session: PlanSessionController) {
             account.id,
           );
       let resolvedPlans = response.plans;
-      const displayPlans = (nextPlans: StoredPlan[]) => {
+      // Only a launch with no pending local work shows the server's own
+      // copies; anything else is a projection and must not be vouched for.
+      const displayPlans = (nextPlans: StoredPlan[], confirmable: boolean) => {
         if (
           !isCurrentAccount() ||
           runtimeRef.current.planLoadRevision !== loadRevision ||
@@ -167,9 +178,21 @@ export function usePlanSync(session: PlanSessionController) {
             defaultPlanForToday(nextPlans),
         );
         runtimeRef.current.savedSnapshots = new Map(
-          nextPlans.map((plan) => [plan.year, JSON.stringify(plan)]),
+          nextPlans.map((plan) => [plan.year, serializedPlan(plan)]),
         );
+        runtimeRef.current.savedSnapshotPlans = new Map(
+          nextPlans.map((plan) => [plan.year, plan]),
+        );
+        runtimeRef.current.confirmedPlans = new Map();
+        if (confirmable)
+          confirmPublishedPlans(
+            runtimeRef.current.confirmedPlans,
+            nextPlans,
+            response.plans,
+            response.planRevisions,
+          );
       };
+      let confirmable = false;
       if (!isCurrentAccount()) return;
       try {
         const startup = await startupPlanState(account.id, response.plans);
@@ -190,16 +213,20 @@ export function usePlanSync(session: PlanSessionController) {
           startup.unreadableJournal || startup.parkingUnavailable,
         );
         resolvedPlans = resolveStartupPlans(response.plans, startup);
+        confirmable = startup.pendingMutations.length === 0;
       } catch {
         if (!isCurrentAccount()) return;
         queueDevicePersistenceRetry(account.id, generation, async () => {
           if (!isCurrentAccount()) return;
           const startup = await startupPlanState(account.id, response.plans);
           if (!isCurrentAccount()) return;
-          displayPlans(resolveStartupPlans(response.plans, startup));
+          displayPlans(
+            resolveStartupPlans(response.plans, startup),
+            startup.pendingMutations.length === 0,
+          );
         });
       }
-      displayPlans(resolvedPlans);
+      displayPlans(resolvedPlans, confirmable);
     },
     [runtimeRef, queueDevicePersistenceRetry, setDraft, setPlans],
   );
@@ -237,6 +264,7 @@ export function usePlanSync(session: PlanSessionController) {
       const publishReconciledPlans = async (
         serverPlans: StoredPlan[],
         intentRevision: number,
+        planRevisions: PlanRevision[] | undefined,
       ): Promise<boolean> => {
         if (
           !isCurrentAccount() ||
@@ -268,7 +296,16 @@ export function usePlanSync(session: PlanSessionController) {
         runtimeRef.current.reconciliationPersistenceFailure = false;
         setPlans(reconciledPlans);
         runtimeRef.current.savedSnapshots = new Map(
-          reconciledPlans.map((plan) => [plan.year, JSON.stringify(plan)]),
+          reconciledPlans.map((plan) => [plan.year, serializedPlan(plan)]),
+        );
+        runtimeRef.current.savedSnapshotPlans = new Map(
+          reconciledPlans.map((plan) => [plan.year, plan]),
+        );
+        confirmPublishedPlans(
+          runtimeRef.current.confirmedPlans,
+          reconciledPlans,
+          serverPlans,
+          planRevisions,
         );
         runtimeRef.current.rejectedWriteFailure = false;
         setDraft(
@@ -302,7 +339,11 @@ export function usePlanSync(session: PlanSessionController) {
                   account.id,
                 );
                 if (
-                  !(await publishReconciledPlans(fresh.plans, refreshRevision))
+                  !(await publishReconciledPlans(
+                    fresh.plans,
+                    refreshRevision,
+                    fresh.planRevisions,
+                  ))
                 )
                   continue;
               }
@@ -324,7 +365,12 @@ export function usePlanSync(session: PlanSessionController) {
               syncResponseSchema,
               {
                 method: "POST",
-                body: JSON.stringify({ mutations: batch }),
+                body: JSON.stringify({
+                  mutations: batch,
+                  knownPlanRevisions: knownPlanRevisions(
+                    runtimeRef.current.confirmedPlans,
+                  ),
+                }),
                 signal: requestController.signal,
               },
               account.id,
@@ -345,7 +391,23 @@ export function usePlanSync(session: PlanSessionController) {
             runtimeRef.current.reconciliationPersistenceFailure = false;
             if (hadRejection) break;
             if (remaining.length === 0) {
-              await publishReconciledPlans(response.plans, batchIntentRevision);
+              const serverPlans = completeServerPlans(
+                response.plans,
+                response.unchangedYears,
+                runtimeRef.current.confirmedPlans,
+              );
+              if (serverPlans) {
+                await publishReconciledPlans(
+                  serverPlans,
+                  batchIntentRevision,
+                  response.planRevisions,
+                );
+              } else {
+                // An omitted year is no longer held here: recover with a
+                // complete snapshot rather than trust the device cache.
+                runtimeRef.current.confirmedPlans = new Map();
+                runtimeRef.current.planRefreshNeeded = true;
+              }
             }
           }
           if (isCurrentAccount()) {
@@ -438,7 +500,7 @@ export function usePlanSync(session: PlanSessionController) {
       account: User,
       generation = runtimeRef.current.accountGeneration,
     ): Promise<void> => {
-      const snapshot = JSON.stringify(changedDraft);
+      const snapshot = serializedPlan(changedDraft);
       const accountId = account.id;
       const ownerSignal = getOwnerSignal();
       const intentRevision = runtimeRef.current.intentRevision;
@@ -452,7 +514,10 @@ export function usePlanSync(session: PlanSessionController) {
             runtimeRef.current.accountGeneration !== generation
           )
             return;
-          const previous = storedPlanSchema.parse(JSON.parse(priorSnapshot));
+          const previous = durableBaseline(
+            priorSnapshot,
+            runtimeRef.current.savedSnapshotPlans.get(changedDraft.year),
+          );
           const mutationTime = Math.max(
             Date.now(),
             runtimeRef.current.lastMutationTime + 1,
@@ -467,6 +532,9 @@ export function usePlanSync(session: PlanSessionController) {
             runtimeRef.current.plans,
             changedDraft,
           );
+          // From here this year holds a local projection, not the server copy.
+          if (mutations.length > 0)
+            runtimeRef.current.confirmedPlans.delete(changedDraft.year);
           await cachePlansAndEnqueue(
             accountId,
             nextPlans,
@@ -485,6 +553,10 @@ export function usePlanSync(session: PlanSessionController) {
             return;
           if (result === "persisted") {
             runtimeRef.current.savedSnapshots.set(changedDraft.year, snapshot);
+            runtimeRef.current.savedSnapshotPlans.set(
+              changedDraft.year,
+              changedDraft,
+            );
             // The device took the write, so whatever an earlier unload could
             // not park is now somewhere that survives this document after all.
             publishUndurableUnloadIntent(false);

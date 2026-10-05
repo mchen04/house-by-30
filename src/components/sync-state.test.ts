@@ -1,9 +1,19 @@
+import fc from "fast-check";
+import { diffPlanMutations } from "@/domain/sync";
+import { storedPlanSchema } from "@/domain/plan-schema";
 import { describe, expect, it, vi } from "vitest";
 import type { BudgetCategory, TransactionEntry } from "@/domain/budget";
 import { storedPlan } from "@/test/fixtures/plans";
 import { commitFastLogEntry } from "@/domain/fast-log";
 import type { StoredPlan } from "@/domain/stored-plan";
 import {
+  durableBaseline,
+  resetSerializedPlans,
+  serializedPlan,
+  completeServerPlans,
+  confirmPublishedPlans,
+  knownPlanRevisions,
+  type ConfirmedServerPlans,
   applyDraftChange,
   authenticationBroadcastTransition,
   cancelAccountPersistenceRetry,
@@ -807,5 +817,227 @@ describe("sync durability state", () => {
         queuedMutationCount: async () => 0,
       }),
     ).rejects.toThrow("source change was rejected");
+  });
+});
+
+describe("confirmed server copies", () => {
+  it("confirms only years published as the server's own copy, and forgets the rest", () => {
+    const server2025 = storedPlan(2025);
+    const server2026 = storedPlan(2026);
+    const newerCached2026 = {
+      ...server2026,
+      updatedAt: "2026-09-09T00:00:00.000Z",
+    };
+    const confirmed: ConfirmedServerPlans = new Map([
+      [2026, { revision: "old", plan: server2026 }],
+    ]);
+
+    confirmPublishedPlans(
+      confirmed,
+      [server2025, newerCached2026],
+      [server2025, server2026],
+      [
+        { year: 2025, revision: "a" },
+        { year: 2026, revision: "b" },
+      ],
+    );
+
+    expect([...confirmed.keys()]).toEqual([2025]);
+    expect(knownPlanRevisions(confirmed)).toEqual([
+      { year: 2025, revision: "a" },
+    ]);
+  });
+
+  it("treats a response without omitted years as the complete account", () => {
+    const plans = [storedPlan(2026)];
+    expect(completeServerPlans(plans, undefined, new Map())).toEqual(plans);
+    expect(completeServerPlans(plans, [2025], new Map())).toBeNull();
+  });
+});
+
+describe("cached plan serialization", () => {
+  const withTransaction = (plan: StoredPlan, title: string): StoredPlan => ({
+    ...plan,
+    transactions: [
+      ...plan.transactions,
+      {
+        id: "00000000-0000-4000-8000-000000000901",
+        categoryId: "00000000-0000-4000-8000-000000000902",
+        amountCents: 1_234,
+        title,
+        date: "2026-03-01",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+      },
+    ],
+  });
+
+  it("serializes exactly like JSON.stringify, before and after a reset", () => {
+    const plans = [storedPlan(2025), withTransaction(storedPlan(2026), "Tea")];
+    for (const plan of plans) {
+      expect(serializedPlan(plan)).toBe(JSON.stringify(plan));
+      expect(serializedPlan(plan)).toBe(JSON.stringify(plan));
+    }
+    resetSerializedPlans();
+    for (const plan of plans)
+      expect(serializedPlan(plan)).toBe(JSON.stringify(plan));
+  });
+
+  it("still sees every edit as a new plan object, whatever was cached before", () => {
+    const durable = storedPlan(2026);
+    const snapshots = new Map([[2026, serializedPlan(durable)]]);
+    expect(intentAwaitingDurableWrite([durable], snapshots)).toBe(false);
+
+    const edited = withTransaction(durable, "Coffee");
+    expect(intentAwaitingDurableWrite([edited], snapshots)).toBe(true);
+
+    // The edit becomes durable; a later edit of the same year is again a gap.
+    snapshots.set(2026, serializedPlan(edited));
+    expect(intentAwaitingDurableWrite([edited], snapshots)).toBe(false);
+    const reverted = { ...edited, transactions: durable.transactions };
+    expect(intentAwaitingDurableWrite([reverted], snapshots)).toBe(true);
+
+    // An equal copy is not a gap; a stale snapshot is.
+    expect(intentAwaitingDurableWrite([{ ...edited }], snapshots)).toBe(false);
+    snapshots.set(2026, serializedPlan(durable));
+    expect(intentAwaitingDurableWrite([edited], snapshots)).toBe(true);
+  });
+});
+
+describe("durable baseline reuse", () => {
+  const categoryId = "00000000-0000-4000-8000-000000000a01";
+  const base: StoredPlan = storedPlan(2026, {
+    startingSavingsCents: 50_000,
+    expenses: [
+      {
+        id: categoryId,
+        name: "Food",
+        group: "Daily",
+        cadence: "monthly",
+        amountCents: 40_000,
+        sortOrder: 0,
+        guidanceBucket: "needs",
+        colorToken: "blue",
+        archived: false,
+      },
+    ],
+    transactions: [
+      {
+        id: "00000000-0000-4000-8000-000000000a02",
+        categoryId,
+        amountCents: 1_500,
+        title: "Lunch",
+        note: "with team",
+        date: "2026-02-03",
+        createdAt: "2026-02-03T00:00:00.000Z",
+        updatedAt: "2026-02-03T00:00:00.000Z",
+      },
+    ],
+  });
+  const ids = () => {
+    let n = 0;
+    return () =>
+      `00000000-0000-4000-8000-${String((n += 1)).padStart(12, "0")}`;
+  };
+  const diff = (previous: StoredPlan, next: StoredPlan) =>
+    diffPlanMutations(previous, next, "2026-03-01T00:00:00.000Z", ids());
+  const parsed = (snapshot: string) =>
+    storedPlanSchema.parse(JSON.parse(snapshot));
+
+  // A held object as the app produces it: optional fields may be explicitly
+  // undefined, which JSON drops but the object keeps.
+  const heldVariant = fc.record({
+    salary: fc.integer({ min: 0, max: 50_000_000 }),
+    savings: fc.option(fc.integer({ min: 0, max: 900_000 }), {
+      nil: undefined,
+    }),
+    note: fc.option(fc.constantFrom("with team", "solo"), { nil: undefined }),
+    title: fc.constantFrom("Lunch", "Dinner"),
+  });
+  const edit = fc.record({
+    salary: fc.option(fc.integer({ min: 0, max: 50_000_000 }), {
+      nil: undefined,
+    }),
+    clearSavings: fc.boolean(),
+    note: fc.option(fc.constantFrom("edited", ""), { nil: undefined }),
+    dropNote: fc.boolean(),
+    addTransaction: fc.boolean(),
+    removeTransaction: fc.boolean(),
+  });
+
+  it("diffs a reused copy exactly like the schema-read snapshot", () => {
+    fc.assert(
+      fc.property(heldVariant, edit, (variant, change) => {
+        const held: StoredPlan = {
+          ...base,
+          grossSalaryCents: variant.salary,
+          startingSavingsCents: variant.savings,
+          transactions: [
+            {
+              ...base.transactions[0],
+              title: variant.title,
+              note: variant.note,
+            },
+          ],
+        };
+        const snapshot = serializedPlan(held);
+        const transaction = { ...held.transactions[0] };
+        if (change.note !== undefined && change.note !== "")
+          transaction.note = change.note;
+        if (change.dropNote) delete transaction.note;
+        const next: StoredPlan = {
+          ...held,
+          grossSalaryCents: change.salary ?? held.grossSalaryCents,
+          startingSavingsCents: change.clearSavings
+            ? undefined
+            : held.startingSavingsCents,
+          transactions: change.removeTransaction
+            ? []
+            : [
+                transaction,
+                ...(change.addTransaction
+                  ? [
+                      {
+                        id: "00000000-0000-4000-8000-000000000a03",
+                        categoryId,
+                        amountCents: 900,
+                        title: "Coffee",
+                        date: "2026-02-04",
+                        createdAt: "2026-02-04T00:00:00.000Z",
+                        updatedAt: "2026-02-04T00:00:00.000Z",
+                      },
+                    ]
+                  : []),
+              ],
+        };
+
+        expect(durableBaseline(snapshot, held)).toBe(held);
+        expect(diff(durableBaseline(snapshot, held), next)).toEqual(
+          diff(parsed(snapshot), next),
+        );
+      }),
+      { numRuns: 400 },
+    );
+  });
+
+  it("reads the snapshot through the schema when the held copy is stale or missing", () => {
+    const older = base;
+    const newer = { ...base, grossSalaryCents: base.grossSalaryCents + 100 };
+    // Another write advanced the durable snapshot; the held object is older.
+    const snapshot = serializedPlan(newer);
+
+    const fromStale = durableBaseline(snapshot, older);
+    expect(fromStale).not.toBe(older);
+    expect(fromStale).toEqual(parsed(snapshot));
+    expect(fromStale.grossSalaryCents).toBe(newer.grossSalaryCents);
+
+    const fromNothing = durableBaseline(snapshot, undefined);
+    expect(fromNothing).toEqual(parsed(snapshot));
+  });
+
+  it("still rejects a snapshot the schema rejects when nothing valid is held", () => {
+    const corrupted = JSON.stringify({ ...base, year: "not a year" });
+    expect(() => durableBaseline(corrupted, base)).toThrow();
+    expect(() => durableBaseline(corrupted, undefined)).toThrow();
   });
 });

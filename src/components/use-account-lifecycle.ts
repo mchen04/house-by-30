@@ -29,6 +29,7 @@ import {
   isCurrentAccountOperation,
   planIntentForYear,
   prepareCopyForward,
+  serializedPlan,
   shouldEvictAccount,
   userWithLatestSession,
 } from "./sync-state";
@@ -179,7 +180,10 @@ export function useAccountLifecycle(
         runtimeRef.current.plans = candidate.plans;
         setDraft(defaultPlanForToday(candidate.plans));
         runtimeRef.current.savedSnapshots = new Map(
-          candidate.plans.map((plan) => [plan.year, JSON.stringify(plan)]),
+          candidate.plans.map((plan) => [plan.year, serializedPlan(plan)]),
+        );
+        runtimeRef.current.savedSnapshotPlans = new Map(
+          candidate.plans.map((plan) => [plan.year, plan]),
         );
         requireAuthoritativePlanRefresh(runtimeRef.current);
         setSaveState("offline");
@@ -278,6 +282,7 @@ export function useAccountLifecycle(
         await loadPlansFor(response.user, {
           generation,
           serverPlans: response.plans,
+          serverPlanRevisions: response.planRevisions,
           signal: ownerSignal,
         });
         runtimeRef.current.restoringAccount = null;

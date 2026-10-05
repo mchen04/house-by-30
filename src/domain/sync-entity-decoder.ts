@@ -264,11 +264,14 @@ export function decodeEntitySyncMutation(
   }
 }
 
-export function applyDecodedEntityMutation(
-  plan: StoredPlan,
+/**
+ * Applies the mutation to a plan the caller exclusively owns. Values are copied
+ * on the way in, so later in-place edits never reach back into the mutation.
+ */
+export function applyDecodedEntityMutationInPlace(
+  next: StoredPlan,
   mutation: DecodedEntityMutation,
-): StoredPlan {
-  const next = structuredClone(plan);
+): void {
   if (mutation.kind === "benefit") {
     const index = next.benefits.findIndex(
       (entry) => entry.id === mutation.entityId,
@@ -276,11 +279,12 @@ export function applyDecodedEntityMutation(
     if (mutation.property === null) {
       if (mutation.value === null) {
         if (index >= 0) next.benefits.splice(index, 1);
-      } else if (index >= 0) next.benefits[index] = mutation.value;
-      else next.benefits.push(mutation.value);
-      return next;
+      } else if (index >= 0)
+        next.benefits[index] = structuredClone(mutation.value);
+      else next.benefits.push(structuredClone(mutation.value));
+      return;
     }
-    if (index < 0) return next;
+    if (index < 0) return;
     const entry = next.benefits[index];
     switch (mutation.property) {
       case "owner":
@@ -290,16 +294,16 @@ export function applyDecodedEntityMutation(
         entry.label = mutation.value;
         break;
       case "amount":
-        entry.amount = mutation.value;
+        entry.amount = structuredClone(mutation.value);
         break;
       case "discountRatePpm":
         entry.discountRatePpm = mutation.value ?? undefined;
         break;
       case "customTaxTreatment":
-        entry.customTaxTreatment = mutation.value ?? undefined;
+        entry.customTaxTreatment = structuredClone(mutation.value) ?? undefined;
         break;
     }
-    return next;
+    return;
   }
   if (mutation.kind === "expense") {
     const index = next.expenses.findIndex(
@@ -308,11 +312,12 @@ export function applyDecodedEntityMutation(
     if (mutation.property === null) {
       if (mutation.value === null) {
         if (index >= 0) next.expenses.splice(index, 1);
-      } else if (index >= 0) next.expenses[index] = mutation.value;
-      else next.expenses.push(mutation.value);
-      return next;
+      } else if (index >= 0)
+        next.expenses[index] = structuredClone(mutation.value);
+      else next.expenses.push(structuredClone(mutation.value));
+      return;
     }
-    if (index < 0) return next;
+    if (index < 0) return;
     const entry = next.expenses[index];
     switch (mutation.property) {
       case "name":
@@ -345,7 +350,7 @@ export function applyDecodedEntityMutation(
         entry.archived = mutation.value;
         break;
     }
-    return next;
+    return;
   }
   const index = next.transactions.findIndex(
     (entry) => entry.id === mutation.entityId,
@@ -353,11 +358,12 @@ export function applyDecodedEntityMutation(
   if (mutation.property === null) {
     if (mutation.value === null) {
       if (index >= 0) next.transactions.splice(index, 1);
-    } else if (index >= 0) next.transactions[index] = mutation.value;
-    else next.transactions.push(mutation.value);
-    return next;
+    } else if (index >= 0)
+      next.transactions[index] = structuredClone(mutation.value);
+    else next.transactions.push(structuredClone(mutation.value));
+    return;
   }
-  if (index < 0) return next;
+  if (index < 0) return;
   const entry = next.transactions[index];
   switch (mutation.property) {
     case "categoryId":
@@ -379,5 +385,4 @@ export function applyDecodedEntityMutation(
       entry.updatedAt = mutation.value;
       break;
   }
-  return next;
 }

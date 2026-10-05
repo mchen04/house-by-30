@@ -6,10 +6,15 @@ import {
   transitionPlanSessionRuntime,
   type PlanSessionRuntime,
 } from "./use-plan-session";
+import { storedPlan } from "@/test/fixtures/plans";
 
 function dirtyRuntime(): PlanSessionRuntime {
   return {
     savedSnapshots: new Map([[2026, "old account"]]),
+    savedSnapshotPlans: new Map([[2026, storedPlan(2026)]]),
+    confirmedPlans: new Map([
+      [2026, { revision: "old-account", plan: storedPlan(2026) }],
+    ]),
     plans: [],
     activeAccount: "account-a",
     accountGeneration: 4,
@@ -83,6 +88,9 @@ describe("account runtime transitions", () => {
       plans: [],
     });
     expect(runtime.savedSnapshots.size).toBe(0);
+    // The next account must never vouch for the previous account's years.
+    expect(runtime.confirmedPlans.size).toBe(0);
+    expect(runtime.savedSnapshotPlans.size).toBe(0);
     expect(runtime.volatileWriteFailureYears.size).toBe(0);
     await expect(runtime.localWriteChain).resolves.toBeUndefined();
   });

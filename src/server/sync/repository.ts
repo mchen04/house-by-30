@@ -8,7 +8,8 @@ import {
 } from "@/domain/local-calendar-date";
 import { normalizedFullPlanSchema } from "@/domain/plan-schema";
 import {
-  applyDecodedSyncMutation,
+  applyDecodedSyncMutationInPlace,
+  applyDecodedSyncMutations,
   decodeSyncMutation,
   encodeSyncMutation,
   syncIntentFingerprint,
@@ -28,10 +29,11 @@ import {
 } from "@/domain/sync";
 import { canonicalUuidSchema } from "@/domain/sync-field";
 import { transportSafeFieldVersion } from "@/domain/field-version";
+import type { PlanRevision } from "@/domain/api-contracts";
 import type { FieldVersions, StoredPlan } from "@/domain/stored-plan";
 import {
   getPlanByYearInTransaction,
-  listPlans,
+  listPlanSnapshot,
 } from "@/server/plans/repository";
 import { parseFieldVersions } from "@/server/field-versions";
 import {
@@ -70,10 +72,7 @@ function refusableMutationIds(
   appliedMutations: readonly DecodedSyncMutation[],
 ): string[] {
   const project = (candidates: readonly DecodedSyncMutation[]): StoredPlan =>
-    candidates.reduce(
-      (plan, mutation) => applyDecodedSyncMutation(plan, mutation),
-      initialPlan,
-    );
+    applyDecodedSyncMutations(initialPlan, candidates);
   let survivors = [...appliedMutations];
   const refused: string[] = [];
   for (let round = 0; round < REFUSAL_SEARCH_ROUNDS; round += 1) {
@@ -356,7 +355,11 @@ async function reconcilePlanYear(
             }
           }
           if (applied) {
-            projectedPlan = applyDecodedSyncMutation(projectedPlan, mutation);
+            // `initialPlan` stays untouched for the refusal search; the
+            // projection gets one private copy for the whole batch.
+            if (projectedPlan === initialPlan)
+              projectedPlan = structuredClone(initialPlan);
+            applyDecodedSyncMutationInPlace(projectedPlan, mutation);
             appliedMutations.push(mutation);
             if (mutation.kind !== "scalar" && mutation.property === null) {
               for (const field of Object.keys(versions)) {
@@ -453,6 +456,7 @@ export async function applySyncMutations(
   sql: Sql,
   userId: string,
   rawMutations: unknown[],
+  knownPlanRevisions?: readonly PlanRevision[],
 ) {
   const receivedAt = new Date();
   const acknowledgements: SyncAcknowledgement[] = [];
@@ -531,5 +535,18 @@ export async function applySyncMutations(
     );
     acknowledgements.push(...result.acknowledgements);
   }
-  return { acknowledgements, plans: await listPlans(sql, userId) };
+  const snapshot = await listPlanSnapshot(
+    sql,
+    userId,
+    knownPlanRevisions && {
+      known: knownPlanRevisions,
+      touchedYears: new Set(byYear.keys()),
+    },
+  );
+  return {
+    acknowledgements,
+    plans: snapshot.plans,
+    planRevisions: snapshot.planRevisions,
+    ...(knownPlanRevisions ? { unchangedYears: snapshot.unchangedYears } : {}),
+  };
 }

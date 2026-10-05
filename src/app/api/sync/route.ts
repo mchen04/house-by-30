@@ -23,7 +23,12 @@ export async function POST(request: Request): Promise<Response> {
   try {
     return validatedJsonResponse(
       syncResponseSchema,
-      await applySyncMutations(database(), user.id, parsed.data.mutations),
+      await applySyncMutations(
+        database(),
+        user.id,
+        parsed.data.mutations,
+        parsed.data.knownPlanRevisions,
+      ),
     );
   } catch (error) {
     if (error instanceof SyncPlanNotFoundError) {

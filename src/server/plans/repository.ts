@@ -16,6 +16,7 @@ import {
   taxTreatmentSchema,
   type PlanBasics,
 } from "../../domain/plan-schema";
+import type { PlanRevision } from "../../domain/api-contracts";
 import type { StoredPlan } from "../../domain/stored-plan";
 import { canonicalJson } from "../../domain/sync";
 import { parseFieldVersions } from "../field-versions";
@@ -376,32 +377,80 @@ export async function getPlanByYear(
   );
 }
 
-async function listPlansInTransaction(
-  sql: TransactionSql,
+export interface PlanSnapshot {
+  plans: StoredPlan[];
+  planRevisions: PlanRevision[];
+  /** Years omitted because the caller already holds that exact revision. */
+  unchangedYears: number[];
+}
+
+export interface PlanDelta {
+  known: readonly PlanRevision[];
+  /** Years the caller just wrote to; they are always returned. */
+  touchedYears: ReadonlySet<number>;
+}
+
+/**
+ * Every plan year of the account, or — given what the caller already holds —
+ * only the years it cannot reuse. Known revisions only ever narrow what is
+ * returned from this account's own rows; a known year the account does not
+ * have makes the answer complete again.
+ */
+export async function listPlanSnapshot(
+  sql: Sql,
   userId: string,
-): Promise<StoredPlan[]> {
-  const rows = await sql<PlanRow[]>`
-    SELECT id, year, state_code, filing_status, gross_salary_cents,
-           additional_income_cents, spouse_wage_income_cents,
-           other_ordinary_income_cents, hsa_coverage, primary_hsa_eligible,
-           spouse_hsa_eligible, primary_hsa_catch_up_eligible,
-           spouse_hsa_catch_up_eligible, primary_hsa_family_allocation_ppm,
-           spouse_hsa_family_allocation_ppm, starting_savings_cents, updated_at,
-           field_versions
-    FROM plans
-    WHERE user_id = ${userId}
-    ORDER BY year
-  `;
-  return hydratePlans(sql, rows);
+  delta?: PlanDelta,
+): Promise<PlanSnapshot> {
+  return sql.begin(
+    "isolation level repeatable read read only",
+    async (transaction) => {
+      const rows = await transaction<(PlanRow & { revision: string })[]>`
+        SELECT id, year, state_code, filing_status, gross_salary_cents,
+               additional_income_cents, spouse_wage_income_cents,
+               other_ordinary_income_cents, hsa_coverage, primary_hsa_eligible,
+               spouse_hsa_eligible, primary_hsa_catch_up_eligible,
+               spouse_hsa_catch_up_eligible, primary_hsa_family_allocation_ppm,
+               spouse_hsa_family_allocation_ppm, starting_savings_cents,
+               updated_at, field_versions,
+               xmin::text || ':' ||
+                 (extract(epoch FROM updated_at) * 1000000)::bigint AS revision
+        FROM plans
+        WHERE user_id = ${userId}
+        ORDER BY year
+      `;
+      const known = new Map(
+        (delta?.known ?? []).map(({ year, revision }) => [year, revision]),
+      );
+      const years = new Set(rows.map(({ year }) => year));
+      const reusable =
+        delta && [...known.keys()].every((year) => years.has(year))
+          ? new Set(
+              rows
+                .filter(
+                  ({ year, revision }) =>
+                    !delta.touchedYears.has(year) &&
+                    known.get(year) === revision,
+                )
+                .map(({ year }) => year),
+            )
+          : new Set<number>();
+      return {
+        plans: await hydratePlans(
+          transaction,
+          rows.filter(({ year }) => !reusable.has(year)),
+        ),
+        planRevisions: rows.map(({ year, revision }) => ({ year, revision })),
+        unchangedYears: [...reusable],
+      };
+    },
+  );
 }
 
 export async function listPlans(
   sql: Sql,
   userId: string,
 ): Promise<StoredPlan[]> {
-  return sql.begin("isolation level repeatable read read only", (transaction) =>
-    listPlansInTransaction(transaction, userId),
-  );
+  return (await listPlanSnapshot(sql, userId)).plans;
 }
 
 export async function createPlanWithDefaults(

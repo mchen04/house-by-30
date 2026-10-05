@@ -6,7 +6,11 @@ import {
   type SetStateAction,
 } from "react";
 import type { User } from "@/domain/api-contracts";
-import type { AccountPersistenceRetry } from "./sync-state";
+import {
+  resetSerializedPlans,
+  type AccountPersistenceRetry,
+  type ConfirmedServerPlans,
+} from "./sync-state";
 import type { SaveState, StoredPlan, WorkspaceLocation } from "./plan-types";
 
 export type PlanSessionPhase =
@@ -51,6 +55,9 @@ type SessionAction =
 
 export interface PlanSessionRuntime {
   savedSnapshots: Map<number, string>;
+  /** Per year, the plan object `savedSnapshots` was serialized from. */
+  savedSnapshotPlans: Map<number, StoredPlan>;
+  confirmedPlans: ConfirmedServerPlans;
   plans: StoredPlan[];
   activeAccount: string | null;
   accountGeneration: number;
@@ -178,6 +185,9 @@ export function transitionPlanSessionRuntime(
     window.clearTimeout(runtime.syncTimer);
   runtime.reconcileAbortController?.abort();
   runtime.savedSnapshots = new Map();
+  runtime.savedSnapshotPlans = new Map();
+  runtime.confirmedPlans = new Map();
+  resetSerializedPlans();
   runtime.plans = [];
   runtime.activeAccount = activeAccount;
   runtime.accountGeneration += 1;
@@ -229,6 +239,8 @@ export function usePlanSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialState);
   const runtimeRef = useRef<PlanSessionRuntime>({
     savedSnapshots: new Map(),
+    savedSnapshotPlans: new Map(),
+    confirmedPlans: new Map(),
     plans: [],
     activeAccount: null,
     accountGeneration: 0,
