@@ -34,11 +34,20 @@ source and never claims to include another device's unsynced work.
    property under a stable item UUID. A Fast Log transaction and an inline
    category creation therefore survive a cold offline relaunch before any
    network delivery.
-6. On reconnect, the foreground `online` path compacts superseded edits. It drains valid work in chronological batches of at most 500. The app does not depend on Background Sync. An unresolved blank label stays pending as an explicit error but cannot block unrelated valid mutations. After acknowledgement, the client fetches a fresh server snapshot. It caches that snapshot only when the outbox is empty and the server revision is current.
+6. On reconnect, the foreground `online` path compacts superseded edits. It drains valid work in chronological batches of at most 500. The app does not depend on Background Sync. An unresolved blank label stays pending as an explicit error but cannot block unrelated valid mutations. After acknowledgement, the client takes the server snapshot from the sync response. It caches that snapshot only when the outbox is empty and the server revision is current.
 7. Duplicate posts are safe: `(user_id, mutation_id)` is the receipt key.
    Receipts remain until account deletion because an offline outbox mutation
    has no retry expiry; pruning one earlier would let a delayed duplicate act
    as a new mutation.
+8. The server applies a batch to one in-memory copy of each plan year. It still validates the whole year before commit.
+
+## Plan revisions
+
+Bootstrap, `GET /api/plans`, and sync responses include `planRevisions`: one opaque string per year. The string changes whenever the stored year changes. The client keeps the server copies it has confirmed in memory, keyed by revision, and sends them as `knownPlanRevisions` with each sync.
+
+The sync response then omits years that match a sent revision and lists them in `unchangedYears`. A year the batch wrote is always returned. A sent year the account does not have makes the response complete again. If the client no longer holds an omitted year, it discards its confirmed copies and fetches a complete snapshot. A local edit drops that year's confirmed copy. Logout and account change drop all of them.
+
+Both fields are optional. An old client sends no revisions and gets every year. A new client reading an old server sees no `unchangedYears` and treats `plans` as complete. The IndexedDB format and outbox format are unchanged, so either build can be rolled back without a cache reset or migration.
 
 ## Conflict rule
 
