@@ -82,6 +82,27 @@ export function displayedSaveState(
     : saveState;
 }
 
+let serializedPlans = new WeakMap<StoredPlan, string>();
+
+/**
+ * A plan's JSON, computed once per plan object. A published plan is never
+ * mutated — edits and server answers always produce new objects, the same
+ * invariant `calculatePlan(draft)`'s memo relies on — so an object's
+ * serialization cannot change while it is cached. Reset with the account.
+ */
+export function serializedPlan(plan: StoredPlan): string {
+  let serialized = serializedPlans.get(plan);
+  if (serialized === undefined) {
+    serialized = JSON.stringify(plan);
+    serializedPlans.set(plan, serialized);
+  }
+  return serialized;
+}
+
+export function resetSerializedPlans(): void {
+  serializedPlans = new WeakMap();
+}
+
 /** Plans the session is holding that differ from what this device last stored. */
 function plansDivergingFromDurableState(
   plans: readonly StoredPlan[],
@@ -89,7 +110,7 @@ function plansDivergingFromDurableState(
 ): { plan: StoredPlan; baseline: string }[] {
   return plans.flatMap((plan) => {
     const baseline = savedSnapshots.get(plan.year);
-    if (baseline === undefined || baseline === JSON.stringify(plan)) return [];
+    if (baseline === undefined || baseline === serializedPlan(plan)) return [];
     return [{ plan, baseline }];
   });
 }

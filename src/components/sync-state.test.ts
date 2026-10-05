@@ -4,6 +4,8 @@ import { storedPlan } from "@/test/fixtures/plans";
 import { commitFastLogEntry } from "@/domain/fast-log";
 import type { StoredPlan } from "@/domain/stored-plan";
 import {
+  resetSerializedPlans,
+  serializedPlan,
   completeServerPlans,
   confirmPublishedPlans,
   knownPlanRevisions,
@@ -846,5 +848,54 @@ describe("confirmed server copies", () => {
     const plans = [storedPlan(2026)];
     expect(completeServerPlans(plans, undefined, new Map())).toEqual(plans);
     expect(completeServerPlans(plans, [2025], new Map())).toBeNull();
+  });
+});
+
+describe("cached plan serialization", () => {
+  const withTransaction = (plan: StoredPlan, title: string): StoredPlan => ({
+    ...plan,
+    transactions: [
+      ...plan.transactions,
+      {
+        id: "00000000-0000-4000-8000-000000000901",
+        categoryId: "00000000-0000-4000-8000-000000000902",
+        amountCents: 1_234,
+        title,
+        date: "2026-03-01",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+      },
+    ],
+  });
+
+  it("serializes exactly like JSON.stringify, before and after a reset", () => {
+    const plans = [storedPlan(2025), withTransaction(storedPlan(2026), "Tea")];
+    for (const plan of plans) {
+      expect(serializedPlan(plan)).toBe(JSON.stringify(plan));
+      expect(serializedPlan(plan)).toBe(JSON.stringify(plan));
+    }
+    resetSerializedPlans();
+    for (const plan of plans)
+      expect(serializedPlan(plan)).toBe(JSON.stringify(plan));
+  });
+
+  it("still sees every edit as a new plan object, whatever was cached before", () => {
+    const durable = storedPlan(2026);
+    const snapshots = new Map([[2026, serializedPlan(durable)]]);
+    expect(intentAwaitingDurableWrite([durable], snapshots)).toBe(false);
+
+    const edited = withTransaction(durable, "Coffee");
+    expect(intentAwaitingDurableWrite([edited], snapshots)).toBe(true);
+
+    // The edit becomes durable; a later edit of the same year is again a gap.
+    snapshots.set(2026, serializedPlan(edited));
+    expect(intentAwaitingDurableWrite([edited], snapshots)).toBe(false);
+    const reverted = { ...edited, transactions: durable.transactions };
+    expect(intentAwaitingDurableWrite([reverted], snapshots)).toBe(true);
+
+    // An equal copy is not a gap; a stale snapshot is.
+    expect(intentAwaitingDurableWrite([{ ...edited }], snapshots)).toBe(false);
+    snapshots.set(2026, serializedPlan(durable));
+    expect(intentAwaitingDurableWrite([edited], snapshots)).toBe(true);
   });
 });

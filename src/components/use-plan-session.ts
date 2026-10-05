@@ -6,9 +6,10 @@ import {
   type SetStateAction,
 } from "react";
 import type { User } from "@/domain/api-contracts";
-import type {
-  AccountPersistenceRetry,
-  ConfirmedServerPlans,
+import {
+  resetSerializedPlans,
+  type AccountPersistenceRetry,
+  type ConfirmedServerPlans,
 } from "./sync-state";
 import type { SaveState, StoredPlan, WorkspaceLocation } from "./plan-types";
 
@@ -183,6 +184,7 @@ export function transitionPlanSessionRuntime(
   runtime.reconcileAbortController?.abort();
   runtime.savedSnapshots = new Map();
   runtime.confirmedPlans = new Map();
+  resetSerializedPlans();
   runtime.plans = [];
   runtime.activeAccount = activeAccount;
   runtime.accountGeneration += 1;

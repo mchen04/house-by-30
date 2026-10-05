@@ -49,6 +49,7 @@ import {
   replacePlanIntent,
   resolvePlanWriteSuccess,
   runDevicePersistenceRetry,
+  serializedPlan,
   unflushedIntentMutations,
 } from "./sync-state";
 import { registerUnloadIntentFlush } from "./document-exit";
@@ -177,7 +178,7 @@ export function usePlanSync(session: PlanSessionController) {
             defaultPlanForToday(nextPlans),
         );
         runtimeRef.current.savedSnapshots = new Map(
-          nextPlans.map((plan) => [plan.year, JSON.stringify(plan)]),
+          nextPlans.map((plan) => [plan.year, serializedPlan(plan)]),
         );
         runtimeRef.current.confirmedPlans = new Map();
         if (confirmable)
@@ -292,7 +293,7 @@ export function usePlanSync(session: PlanSessionController) {
         runtimeRef.current.reconciliationPersistenceFailure = false;
         setPlans(reconciledPlans);
         runtimeRef.current.savedSnapshots = new Map(
-          reconciledPlans.map((plan) => [plan.year, JSON.stringify(plan)]),
+          reconciledPlans.map((plan) => [plan.year, serializedPlan(plan)]),
         );
         confirmPublishedPlans(
           runtimeRef.current.confirmedPlans,
@@ -493,7 +494,7 @@ export function usePlanSync(session: PlanSessionController) {
       account: User,
       generation = runtimeRef.current.accountGeneration,
     ): Promise<void> => {
-      const snapshot = JSON.stringify(changedDraft);
+      const snapshot = serializedPlan(changedDraft);
       const accountId = account.id;
       const ownerSignal = getOwnerSignal();
       const intentRevision = runtimeRef.current.intentRevision;
