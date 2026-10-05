@@ -8,8 +8,9 @@ import type { StoredPlan } from "@/domain/stored-plan";
 import { diffPlanMutations, type SyncMutation } from "@/domain/sync";
 import type { SaveState } from "./plan-types";
 import {
-  applyDecodedSyncMutation,
+  applyDecodedSyncMutations,
   decodeSyncMutation,
+  type DecodedSyncMutation,
 } from "@/domain/sync-decoder";
 
 interface SavedStateInput {
@@ -440,14 +441,15 @@ export function mergePlansWithLocalIntent(
   for (const plan of localPlans) {
     if (!serverYears.has(plan.year)) merged.set(plan.year, plan);
   }
+  const pendingByYear = new Map<number, DecodedSyncMutation[]>();
   for (const mutation of pendingMutations) {
     if (!serverYears.has(mutation.planYear)) continue;
-    const plan = merged.get(mutation.planYear);
-    if (!plan) continue;
-    merged.set(
-      mutation.planYear,
-      applyDecodedSyncMutation(plan, decodeSyncMutation(mutation)),
-    );
+    const group = pendingByYear.get(mutation.planYear) ?? [];
+    group.push(decodeSyncMutation(mutation));
+    pendingByYear.set(mutation.planYear, group);
+  }
+  for (const [year, mutations] of pendingByYear) {
+    merged.set(year, applyDecodedSyncMutations(merged.get(year)!, mutations));
   }
   return [...merged.values()].toSorted((left, right) => left.year - right.year);
 }

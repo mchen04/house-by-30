@@ -8,7 +8,8 @@ import {
 } from "@/domain/local-calendar-date";
 import { normalizedFullPlanSchema } from "@/domain/plan-schema";
 import {
-  applyDecodedSyncMutation,
+  applyDecodedSyncMutationInPlace,
+  applyDecodedSyncMutations,
   decodeSyncMutation,
   encodeSyncMutation,
   syncIntentFingerprint,
@@ -70,10 +71,7 @@ function refusableMutationIds(
   appliedMutations: readonly DecodedSyncMutation[],
 ): string[] {
   const project = (candidates: readonly DecodedSyncMutation[]): StoredPlan =>
-    candidates.reduce(
-      (plan, mutation) => applyDecodedSyncMutation(plan, mutation),
-      initialPlan,
-    );
+    applyDecodedSyncMutations(initialPlan, candidates);
   let survivors = [...appliedMutations];
   const refused: string[] = [];
   for (let round = 0; round < REFUSAL_SEARCH_ROUNDS; round += 1) {
@@ -356,7 +354,11 @@ async function reconcilePlanYear(
             }
           }
           if (applied) {
-            projectedPlan = applyDecodedSyncMutation(projectedPlan, mutation);
+            // `initialPlan` stays untouched for the refusal search; the
+            // projection gets one private copy for the whole batch.
+            if (projectedPlan === initialPlan)
+              projectedPlan = structuredClone(initialPlan);
+            applyDecodedSyncMutationInPlace(projectedPlan, mutation);
             appliedMutations.push(mutation);
             if (mutation.kind !== "scalar" && mutation.property === null) {
               for (const field of Object.keys(versions)) {

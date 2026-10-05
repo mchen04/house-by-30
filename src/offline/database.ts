@@ -1,7 +1,7 @@
 import { storedPlanSchema } from "@/domain/plan-schema";
 import { normalizeStoredPlan, type StoredPlan } from "@/domain/stored-plan";
 import {
-  applyDecodedSyncMutation,
+  applyDecodedSyncMutations,
   decodeSyncMutation,
 } from "@/domain/sync-decoder";
 import type { SyncMutation } from "@/domain/sync";
@@ -54,13 +54,6 @@ export {
   startupPlanState,
   type StartupPlanState,
 } from "./plan-cache";
-
-function applyMutationToPlan(
-  plan: StoredPlan,
-  mutation: SyncMutation,
-): StoredPlan {
-  return applyDecodedSyncMutation(plan, decodeSyncMutation(mutation));
-}
 
 export async function cachePlansAndEnqueue(
   userId: string,
@@ -133,9 +126,9 @@ export async function cachePlansAndEnqueue(
                 return true;
               });
             const merged = normalizeStoredPlan(
-              winningMutations.reduce(
-                applyMutationToPlan,
+              applyDecodedSyncMutations(
                 normalizeStoredPlan(existing ?? fallback!),
+                winningMutations.map(decodeSyncMutation),
               ),
             );
             plansStore.put(merged);
