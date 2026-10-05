@@ -29,10 +29,11 @@ import {
 } from "@/domain/sync";
 import { canonicalUuidSchema } from "@/domain/sync-field";
 import { transportSafeFieldVersion } from "@/domain/field-version";
+import type { PlanRevision } from "@/domain/api-contracts";
 import type { FieldVersions, StoredPlan } from "@/domain/stored-plan";
 import {
   getPlanByYearInTransaction,
-  listPlans,
+  listPlanSnapshot,
 } from "@/server/plans/repository";
 import { parseFieldVersions } from "@/server/field-versions";
 import {
@@ -455,6 +456,7 @@ export async function applySyncMutations(
   sql: Sql,
   userId: string,
   rawMutations: unknown[],
+  knownPlanRevisions?: readonly PlanRevision[],
 ) {
   const receivedAt = new Date();
   const acknowledgements: SyncAcknowledgement[] = [];
@@ -533,5 +535,18 @@ export async function applySyncMutations(
     );
     acknowledgements.push(...result.acknowledgements);
   }
-  return { acknowledgements, plans: await listPlans(sql, userId) };
+  const snapshot = await listPlanSnapshot(
+    sql,
+    userId,
+    knownPlanRevisions && {
+      known: knownPlanRevisions,
+      touchedYears: new Set(byYear.keys()),
+    },
+  );
+  return {
+    acknowledgements,
+    plans: snapshot.plans,
+    planRevisions: snapshot.planRevisions,
+    ...(knownPlanRevisions ? { unchangedYears: snapshot.unchangedYears } : {}),
+  };
 }

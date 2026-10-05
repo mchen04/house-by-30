@@ -4,6 +4,7 @@ import {
   type User,
 } from "@/domain/api-contracts";
 import { storedPlanSchema } from "@/domain/plan-schema";
+import type { PlanRevision } from "@/domain/api-contracts";
 import type { StoredPlan } from "@/domain/stored-plan";
 import { diffPlanMutations, type SyncMutation } from "@/domain/sync";
 import type { SaveState } from "./plan-types";
@@ -482,4 +483,66 @@ export async function prepareCopyForward(
       "The source plan still has unsynced edits. Reconnect and wait for Saved before copying it.",
     );
   }
+}
+
+/**
+ * Server copies this tab received and has not edited since, keyed by year with
+ * the server revision they were read at. Only these may be vouched for in a
+ * version-aware sync: a year with any local edit is dropped from the map, so a
+ * locally projected plan is never presented as confirmed server data.
+ */
+export type ConfirmedServerPlans = Map<
+  number,
+  { revision: string; plan: StoredPlan }
+>;
+
+export function knownPlanRevisions(
+  confirmed: ConfirmedServerPlans,
+): PlanRevision[] {
+  return [...confirmed].map(([year, { revision }]) => ({ year, revision }));
+}
+
+/**
+ * Records which published years are the server's own copy. A published year
+ * whose `updatedAt` differs from the server copy came from elsewhere (a newer
+ * cached snapshot) and is not confirmed.
+ */
+export function confirmPublishedPlans(
+  confirmed: ConfirmedServerPlans,
+  published: readonly StoredPlan[],
+  serverPlans: readonly StoredPlan[],
+  revisions: readonly PlanRevision[] | undefined,
+): void {
+  const revisionByYear = new Map(
+    (revisions ?? []).map(({ year, revision }) => [year, revision]),
+  );
+  for (const server of serverPlans) {
+    const shown = published.find(({ year }) => year === server.year);
+    const revision = revisionByYear.get(server.year);
+    if (shown && revision && shown.updatedAt === server.updatedAt)
+      confirmed.set(server.year, { revision, plan: shown });
+    else confirmed.delete(server.year);
+  }
+}
+
+/**
+ * Rebuilds the complete server answer from a partial one. Returns `null` when
+ * an omitted year is no longer held here, so the caller must recover with a
+ * complete snapshot instead of trusting whatever its cache now contains.
+ */
+export function completeServerPlans(
+  plans: readonly StoredPlan[],
+  unchangedYears: readonly number[] | undefined,
+  confirmed: ConfirmedServerPlans,
+): StoredPlan[] | null {
+  if (!unchangedYears) return [...plans];
+  const reused: StoredPlan[] = [];
+  for (const year of unchangedYears) {
+    const held = confirmed.get(year);
+    if (!held) return null;
+    reused.push(held.plan);
+  }
+  return [...plans, ...reused].toSorted(
+    (left, right) => left.year - right.year,
+  );
 }

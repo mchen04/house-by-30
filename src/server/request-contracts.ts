@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { planRevisionsSchema } from "@/domain/api-contracts";
 import { fieldVersionsSchema, planYearSchema } from "@/domain/plan-schema";
 import { SYNC_BATCH_SIZE } from "@/domain/sync";
 
@@ -21,4 +22,5 @@ export const copyPlanSchema = z.object({
 
 export const syncRequestSchema = z.object({
   mutations: z.array(z.unknown()).min(1).max(SYNC_BATCH_SIZE),
+  knownPlanRevisions: planRevisionsSchema.optional(),
 });

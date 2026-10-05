@@ -169,6 +169,11 @@ function WorkspaceHarness({
   );
 }
 
+interface SyncBody {
+  mutations: { mutationId: string; field: string }[];
+  knownPlanRevisions?: { year: number; revision: string }[];
+}
+
 interface MountedSync {
   session: PlanSessionController;
   sync: PlanSyncController;
@@ -873,5 +878,168 @@ describe("daily cockpit integration contract", () => {
       "Showing the latest copy saved on this device",
     );
     expect(button(container, "Retry sync")).toBeTruthy();
+  });
+
+  describe("version-aware sync", () => {
+    const plan2025 = storedPlan(2025, {
+      id: "00000000-0000-4000-8000-000000002025",
+      expenses: baseline.expenses,
+    });
+    const revisions = (current2026: string) => [
+      { year: 2025, revision: "r2025" },
+      { year: 2026, revision: current2026 },
+    ];
+
+    async function mountOnline(onSync: (body: SyncBody) => object) {
+      let mounted: MountedSync | undefined;
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: true,
+      });
+      jsonRequest.mockImplementation(async (url: string, _schema, init) => {
+        if (url === "/api/bootstrap")
+          return {
+            user,
+            plans: [plan2025, baseline],
+            planRevisions: revisions("r2026"),
+          };
+        if (url === "/api/sync")
+          return onSync(JSON.parse(String(init?.body)) as SyncBody);
+        if (url === "/api/auth/session") return { user };
+        return {
+          plans: await cachedPlans(user.id),
+          planRevisions: revisions("r2026-full"),
+        };
+      });
+      act(() => {
+        root.render(
+          <LifecycleHarness
+            expose={(value) => {
+              mounted = value;
+            }}
+          />,
+        );
+      });
+      await settleUntil(
+        () => mounted?.session.phase === "ready",
+        "ready account lifecycle",
+      );
+      return () => mounted!;
+    }
+
+    async function fastLogAndSettle(get: () => MountedSync, title: string) {
+      click(button(container, "Fast Log expense"));
+      fill(
+        container.querySelector<HTMLInputElement>('input[placeholder="0.00"]')!,
+        "7.00",
+      );
+      fill(
+        [...container.querySelectorAll<HTMLInputElement>("input")].find(
+          (input) =>
+            input.closest("label")?.textContent?.includes("What was it?"),
+        )!,
+        title,
+      );
+      click(button(container, "Save expense"));
+      await settleUntil(
+        () =>
+          get().session.draft?.transactions.some(
+            (entry) => entry.title === title,
+          ) === true,
+        "local transaction",
+      );
+      await get().session.runtimeRef.current.localWriteChain;
+      for (let round = 0; round < 3; round += 1) {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+        });
+        if (get().session.runtimeRef.current.reconcileRunning)
+          await act(async () => {
+            await get().session.runtimeRef.current.reconcileRunning;
+          });
+      }
+      await settleUntil(
+        () => get().session.saveState === "saved",
+        "saved state",
+      );
+    }
+
+    async function serverCopyOf2026() {
+      const projected = (await cachedPlans(user.id)).find(
+        ({ year }) => year === 2026,
+      )!;
+      return { ...projected, updatedAt: "2026-09-01T00:00:00.000Z" };
+    }
+
+    it("vouches only for unedited server years and rebuilds the complete answer from a partial one", async () => {
+      const bodies: SyncBody[] = [];
+      const get = await mountOnline((body) => {
+        bodies.push(body);
+        return serverCopyOf2026().then((plan2026) => ({
+          acknowledgements: body.mutations.map(({ mutationId }) => ({
+            mutationId,
+          })),
+          plans: [plan2026],
+          planRevisions: revisions("r2026-next"),
+          unchangedYears: [2025],
+        }));
+      });
+
+      await fastLogAndSettle(get, "Delta coffee");
+
+      expect(bodies).toHaveLength(1);
+      // The edited year is a local projection, so it is never vouched for.
+      expect(bodies[0].knownPlanRevisions).toEqual([
+        { year: 2025, revision: "r2025" },
+      ]);
+      expect(jsonRequest.mock.calls.map(([url]) => url)).not.toContain(
+        "/api/plans",
+      );
+      const shown = get().session.plans;
+      expect(shown.map(({ year }) => year)).toEqual([2025, 2026]);
+      expect(shown[0]).toMatchObject({ id: plan2025.id });
+      expect(shown[1].transactions).toContainEqual(
+        expect.objectContaining({ title: "Delta coffee" }),
+      );
+      expect((await cachedPlans(user.id)).map(({ year }) => year)).toEqual([
+        2025, 2026,
+      ]);
+      expect(
+        [...get().session.runtimeRef.current.confirmedPlans].map(
+          ([year, { revision }]) => [year, revision],
+        ),
+      ).toEqual([
+        [2025, "r2025"],
+        [2026, "r2026-next"],
+      ]);
+    });
+
+    it("recovers with a complete snapshot when an omitted year is no longer held", async () => {
+      let get: () => MountedSync = () => {
+        throw new Error("not mounted");
+      };
+      get = await mountOnline((body) => {
+        // The year stops being held while the request is in flight.
+        get().session.runtimeRef.current.confirmedPlans.delete(2025);
+        return serverCopyOf2026().then((plan2026) => ({
+          acknowledgements: body.mutations.map(({ mutationId }) => ({
+            mutationId,
+          })),
+          plans: [plan2026],
+          planRevisions: revisions("r2026-next"),
+          unchangedYears: [2025],
+        }));
+      });
+
+      await fastLogAndSettle(get, "Recovered coffee");
+
+      expect(jsonRequest.mock.calls.map(([url]) => url)).toContain(
+        "/api/plans",
+      );
+      expect(get().session.plans.map(({ year }) => year)).toEqual([2025, 2026]);
+      expect(get().session.runtimeRef.current.confirmedPlans.get(2026)).toEqual(
+        expect.objectContaining({ revision: "r2026-full" }),
+      );
+    });
   });
 });

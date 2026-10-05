@@ -278,6 +278,7 @@ export function useAccountLifecycle(
         await loadPlansFor(response.user, {
           generation,
           serverPlans: response.plans,
+          serverPlanRevisions: response.planRevisions,
           signal: ownerSignal,
         });
         runtimeRef.current.restoringAccount = null;

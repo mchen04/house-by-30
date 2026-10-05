@@ -4,6 +4,10 @@ import { storedPlan } from "@/test/fixtures/plans";
 import { commitFastLogEntry } from "@/domain/fast-log";
 import type { StoredPlan } from "@/domain/stored-plan";
 import {
+  completeServerPlans,
+  confirmPublishedPlans,
+  knownPlanRevisions,
+  type ConfirmedServerPlans,
   applyDraftChange,
   authenticationBroadcastTransition,
   cancelAccountPersistenceRetry,
@@ -807,5 +811,40 @@ describe("sync durability state", () => {
         queuedMutationCount: async () => 0,
       }),
     ).rejects.toThrow("source change was rejected");
+  });
+});
+
+describe("confirmed server copies", () => {
+  it("confirms only years published as the server's own copy, and forgets the rest", () => {
+    const server2025 = storedPlan(2025);
+    const server2026 = storedPlan(2026);
+    const newerCached2026 = {
+      ...server2026,
+      updatedAt: "2026-09-09T00:00:00.000Z",
+    };
+    const confirmed: ConfirmedServerPlans = new Map([
+      [2026, { revision: "old", plan: server2026 }],
+    ]);
+
+    confirmPublishedPlans(
+      confirmed,
+      [server2025, newerCached2026],
+      [server2025, server2026],
+      [
+        { year: 2025, revision: "a" },
+        { year: 2026, revision: "b" },
+      ],
+    );
+
+    expect([...confirmed.keys()]).toEqual([2025]);
+    expect(knownPlanRevisions(confirmed)).toEqual([
+      { year: 2025, revision: "a" },
+    ]);
+  });
+
+  it("treats a response without omitted years as the complete account", () => {
+    const plans = [storedPlan(2026)];
+    expect(completeServerPlans(plans, undefined, new Map())).toEqual(plans);
+    expect(completeServerPlans(plans, [2025], new Map())).toBeNull();
   });
 });

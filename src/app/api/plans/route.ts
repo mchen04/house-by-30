@@ -12,7 +12,7 @@ import {
 } from "@/server/http";
 import {
   createPlanWithDefaults,
-  listPlans,
+  listPlanSnapshot,
   PlanYearConflictError,
 } from "@/server/plans/repository";
 
@@ -21,9 +21,8 @@ export async function GET(request: Request): Promise<Response> {
   if (!user) return errorResponse(401, "Your session has expired.");
   if (!requestMatchesUser(request, user))
     return errorResponse(409, "The active account changed in another tab.");
-  return validatedJsonResponse(plansResponseSchema, {
-    plans: await listPlans(database(), user.id),
-  });
+  const { plans, planRevisions } = await listPlanSnapshot(database(), user.id);
+  return validatedJsonResponse(plansResponseSchema, { plans, planRevisions });
 }
 
 export async function POST(request: Request): Promise<Response> {
